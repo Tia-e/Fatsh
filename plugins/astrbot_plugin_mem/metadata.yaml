@@ -1,0 +1,6 @@
+name: astrbot_plugin_mem
+display_name: 长期记忆
+desc: /mem 管理长期记忆：enable/disable/status/show/clear/clearall。默认关闭，开启后每 10 轮对话自动整理一次。
+version: v1.0.0
+author: hermes
+repo: ""

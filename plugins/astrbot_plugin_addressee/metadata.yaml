@@ -1,0 +1,6 @@
+name: astrbot_plugin_addressee
+display_name: 群聊接话状态机
+desc: 三态（闲置/接话/不接）决定群里要不要接话：结构化必回，模型可输出 <不接> 表示沉默，闲置 10% 骰子、按群隔离、夜间静默、限流。
+version: v1.0.0
+author: hermes
+repo: ""

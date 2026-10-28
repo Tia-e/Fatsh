@@ -1,0 +1,6 @@
+name: astrbot_plugin_config
+display_name: 配置入口
+desc: /config 统一配置：delay 改发送延迟（0-10 档）、prompt 看当前人格提示词、provider 看当前模型。
+version: v1.0.0
+author: hermes
+repo: ""

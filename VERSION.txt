@@ -1,0 +1,6 @@
+name: dafeiyu-pack
+version: 1.0.1
+built: 2026-10-28
+target: AstrBot 4.29.1 (Windows) + SnowLuma v2.1.1
+contents: 8 plugins + 4 patched core files + install.py (GUI) + bat launchers
+admin: single, hashed (salt + sha256), replace via 修改管理员.bat

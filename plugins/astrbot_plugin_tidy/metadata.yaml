@@ -1,0 +1,6 @@
+name: astrbot_plugin_tidy
+display_name: 真人口吻整理
+desc: LLM 回复发送前做脚本级整理——中文句号换成换行、逗号分号换成换行、去掉空行，确保"不打句号、能断句"。
+version: v1.0.0
+author: hermes
+repo: ""

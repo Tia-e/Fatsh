@@ -1,0 +1,6 @@
+name: astrbot_plugin_mode
+display_name: 人格模式
+desc: "/mode 切换 5 套人格（默认/软萌/贴吧老哥/傲娇/毒舌），三层拼接提示词：公用输出规则→场景信息（群/私聊/agent 能力/对主人更软）→人格→记忆块。仅机器人管理员可切换。"
+version: v1.1.0
+author: hermes
+repo: ""

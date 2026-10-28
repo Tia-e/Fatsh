@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "idle_probability": 0.1,
+  "talk_seconds": 60,
+  "mute_seconds": 60,
+  "max_refresh": 3,
+  "cooldown_seconds": 60,
+  "structured_names": ["大肥鱼", "肥鱼"],
+  "structured_cooldown_seconds": 60,
+  "structured_max_per_sender": 2,
+  "night_silence": ["23:00", "08:00"],
+  "groups": ["*"]
+}

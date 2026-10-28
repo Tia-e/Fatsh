@@ -1,0 +1,49 @@
+{
+    "enabled": {
+        "description": "启用拟人延迟",
+        "type": "bool",
+        "default": true
+    },
+    "distribution": {
+        "description": "延迟分布",
+        "hint": "normal = 正态分布（更自然，多数落在 mean 附近）；uniform = 均匀分布（min~max 之间等概率）。",
+        "type": "string",
+        "options": ["normal", "uniform"],
+        "default": "normal"
+    },
+    "mean": {
+        "description": "正态分布均值（秒）",
+        "hint": "仅 normal 模式生效。默认 4 秒。",
+        "type": "float",
+        "default": 4.0
+    },
+    "sigma": {
+        "description": "正态分布标准差（秒）",
+        "hint": "仅 normal 模式生效。越大越随机。默认 2 秒。",
+        "type": "float",
+        "default": 2.0
+    },
+    "min_delay": {
+        "description": "最小延迟（秒）",
+        "type": "float",
+        "default": 0.0
+    },
+    "max_delay": {
+        "description": "最大延迟（秒）",
+        "hint": "随机值会被夹在 min_delay ~ max_delay 之间。默认 0~10 秒。",
+        "type": "float",
+        "default": 10.0
+    },
+    "per_char_seconds": {
+        "description": "每字追加的打字时间（秒）",
+        "hint": "回复越长等得越久，模拟打字。设 0 关闭。默认 0.05。",
+        "type": "float",
+        "default": 0.05
+    },
+    "max_total": {
+        "description": "总延迟上限（秒）",
+        "hint": "基础延迟 + 打字时间的硬上限。默认 15 秒。",
+        "type": "float",
+        "default": 15.0
+    }
+}

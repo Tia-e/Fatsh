@@ -1,0 +1,6 @@
+name: astrbot_plugin_priv_gate
+display_name: 权限闸门
+desc: 非白名单用户只保留纯聊天，清空 agent 工具集（func_tool），防止调用定时任务/搜索/沙箱等能力。白名单与 cmd_perm.json 共用（支持哈希）。
+version: v1.0.0
+author: hermes
+repo: ""
