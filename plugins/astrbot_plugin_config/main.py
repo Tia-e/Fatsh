@@ -9,6 +9,8 @@ from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 HELP_LINES = [
     "/config             本说明",
     "/config delay <0-10>  修改发送延迟：0=立刻发，5=0-5秒正态+每字0.05秒（默认），10=0-10秒+每字0.1秒",
+    "/config think <on|off> 模型思考开关，默认关",
+    "/config ctx <1-10>  上下文预算（单位 k tokens），默认 5 = 5k",
     "/config prompt      输出这条会话实际发给模型的完整提示词（公用规则+场景+人格+记忆）",
     "/config provider    查看当前使用的模型与候选模型",
 ]
@@ -101,6 +103,74 @@ class ConfigCmd(Star):
         _write_json(_data_path(DELAY_CFG), new)
         return new
 
+    # ---------- 思考开关 ----------
+    def _think_state(self, event: AstrMessageEvent) -> tuple[bool, list[str]]:
+        try:
+            cfg = self.context.get_config(umo=event.unified_msg_origin) or {}
+        except Exception:
+            cfg = {}
+        on = False
+        ids = []
+        for p in cfg.get("provider", []):
+            if p.get("type") != "openai_chat_completion":
+                continue
+            ids.append(str(p.get("id")))
+            ce = p.get("custom_extra_body") or {}
+            if str(ce.get("reasoning_effort", "")).lower() not in (
+                "none",
+                "off",
+                "disabled",
+            ):
+                on = True
+        return on, ids
+
+    def _apply_think(self, event: AstrMessageEvent, on: bool) -> list[str]:
+        cfg = self.context.get_config(umo=event.unified_msg_origin)
+        ids = []
+        for p in cfg.get("provider", []):
+            if p.get("type") != "openai_chat_completion":
+                continue
+            ids.append(str(p.get("id")))
+            ce = p.setdefault("custom_extra_body", {})
+            if on:
+                ce.pop("reasoning_effort", None)
+            else:
+                ce["reasoning_effort"] = "none"
+        cfg.save_config()
+        # 运行时立即生效：改已加载的 provider 实例
+        for inst in getattr(self.context.provider_manager, "provider_insts", []):
+            pid = str((inst.provider_config or {}).get("id", ""))
+            if pid in ids:
+                ce = inst.provider_config.setdefault("custom_extra_body", {})
+                if on:
+                    ce.pop("reasoning_effort", None)
+                else:
+                    ce["reasoning_effort"] = "none"
+        return ids
+
+    # ---------- 上下文预算 ----------
+    def _ctx_level(self, event: AstrMessageEvent) -> int:
+        try:
+            cfg = self.context.get_config(umo=event.unified_msg_origin) or {}
+            v = int(
+                cfg.get("agent_runner", {})
+                .get("config", {})
+                .get("compression", {})
+                .get("fallback_max_tokens", 5000)
+            )
+            return max(1, min(10, round(v / 1000)))
+        except Exception:
+            return 5
+
+    def _apply_ctx(self, event: AstrMessageEvent, level: int) -> dict:
+        cfg = self.context.get_config(umo=event.unified_msg_origin)
+        comp = cfg["agent_runner"]["config"].setdefault("compression", {})
+        comp["fallback_max_tokens"] = int(level) * 1000
+        # 预算很小时，用"丢最早轮次"而不是"每轮都调模型做摘要"
+        comp["overflow_strategy"] = "truncate_by_turns"
+        cfg.save_config()
+        return comp
+
     # ---------- 提示词 ----------
     def _base_persona(self, event: AstrMessageEvent) -> str:
         try:
@@ -134,8 +204,11 @@ class ConfigCmd(Star):
         """配置：延迟、提示词、模型。用法：/config delay 5"""
         raw = self._arg(event)
         if not raw:
+            _on, _ = self._think_state(event)
             yield event.plain_result(
-                "⚙️ 当前延迟档位：" + str(self._delay_level()) + "（0=秒发，5=默认，10=最慢）\n\n"
+                "⚙️ 当前延迟档位：" + str(self._delay_level()) + "（0=秒发，5=默认，10=最慢）\n"
+                f"🧠 思考：" + ("开" if _on else "关") + "（默认关）\n"
+                f"📦 上下文预算：" + str(self._ctx_level(event)) + "k tokens（1-10，默认 5）\n\n"
                 + "\n".join(HELP_LINES)
             )
             return
@@ -193,6 +266,48 @@ class ConfigCmd(Star):
                 f"模式：{item.get('mode', '?')}｜生成于 {item.get('ts', '?')}｜共 {len(prompt)} 字\n"
                 "────────────\n"
                 + prompt
+            )
+            return
+
+        if sub == "think":
+            if not rest:
+                on, _ = self._think_state(event)
+                yield event.plain_result(
+                    f"🧠 当前思考：{'开' if on else '关'}\n用法：/config think on|off（默认关）"
+                )
+                return
+            val = rest.strip().lower()
+            if val in ("on", "开", "1", "true", "yes"):
+                ids = self._apply_think(event, True)
+                yield event.plain_result(
+                    f"✅ 已开启思考（{', '.join(ids)}）\n注意：会更慢、更贵，输出 tokens 约涨 3-4 倍"
+                )
+            elif val in ("off", "关", "0", "false", "no"):
+                ids = self._apply_think(event, False)
+                yield event.plain_result(f"✅ 已关闭思考（{', '.join(ids)}），立即生效")
+            else:
+                yield event.plain_result("参数只能是 on 或 off。用法：/config think off")
+            return
+
+        if sub == "ctx":
+            if not rest:
+                yield event.plain_result(
+                    f"📦 当前上下文预算：{self._ctx_level(event)}k tokens\n"
+                    "用法：/config ctx <1-10>（1=1k，10=10k，默认 5）"
+                )
+                return
+            try:
+                level = int(rest)
+            except ValueError:
+                yield event.plain_result("参数必须是 1-10 的整数")
+                return
+            if level < 1 or level > 10:
+                yield event.plain_result("参数必须在 1-10 之间")
+                return
+            comp = self._apply_ctx(event, level)
+            yield event.plain_result(
+                f"✅ 上下文预算已设为 {level}k tokens\n"
+                f"超出后丢弃最早的对话轮次（不额外调模型）；当前上限 {comp.get('fallback_max_tokens')}"
             )
             return
 
