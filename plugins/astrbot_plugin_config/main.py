@@ -7,7 +7,7 @@ from astrbot.api.star import Context, Star, register
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 HELP_LINES = [
-    "/config delay 0-10    改发送延迟（5=1秒+每字0.05秒，地板1.5；10=2秒+每字0.1秒）",
+    "/config delay 0-10    改发送延迟（首条 0-N 秒正态+每字；断句后 1+每字，地板 1.5）",
     "/config think on|off  改思考开关（默认关；整理记忆时始终开）",
     "/config ctx 2-32      改上下文预算（单位 k，默认 16）",
     "/config prompt        看这条会话的完整提示词",
@@ -84,7 +84,11 @@ class ConfigCmd(Star):
         if level == 0:
             new = {
                 "enabled": False,
-                "distribution": "fixed",
+                "distribution": "normal",
+                "mean": 0.0,
+                "sigma": 0.0,
+                "min_delay": 0.0,
+                "max_delay": 0.0,
                 "base_delay": 0.0,
                 "per_char_seconds": 0.0,
                 "segment_min_interval": 0.0,
@@ -94,8 +98,12 @@ class ConfigCmd(Star):
         else:
             new = {
                 "enabled": True,
-                "distribution": "fixed",
-                # 档位 5 = 1 秒基础 + 每字 0.05 秒（默认），分段地板固定 1.5 秒
+                "distribution": "normal",
+                # 首条：正态 0-max，均值 mean；分段：1 + 每字，地板 1.5
+                "mean": round(level * 0.5, 2),
+                "sigma": round(level * 0.26, 2),
+                "min_delay": 0.0,
+                "max_delay": float(level),
                 "base_delay": round(level * 0.2, 2),
                 "per_char_seconds": round(level * 0.01, 3),
                 "segment_min_interval": 1.5,
@@ -252,9 +260,9 @@ class ConfigCmd(Star):
                 yield event.plain_result("✅ 发送延迟已设为 0：立刻发送（分段也不等）")
             else:
                 yield event.plain_result(
-                    f"✅ 发送延迟已设为 {level}：基础 {cfg.get('base_delay', 0):.1f} 秒"
-                    f" + 每字 {cfg.get('per_char_seconds', 0):.2f} 秒"
-                    f"\n地板 {cfg.get('segment_min_interval', 1.5):.1f} 秒（不足就按地板发）"
+                    f"✅ 发送延迟已设为 {level}：首条 0-{level:g} 秒正态（均值 {level/2:.1f}）"
+                    f" + 每字 {level*0.01:.2f} 秒"
+                    f"\n断句后每条 {cfg.get('base_delay', 1.0):.2f} 秒 + 每字，地板 {cfg.get('segment_min_interval', 1.5):.1f} 秒"
                 )
             logger.info(f"config: delay -> {cfg}")
             return

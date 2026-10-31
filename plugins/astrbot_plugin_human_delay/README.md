@@ -1,43 +1,73 @@
-# human_delay · 拟人延迟 + 分段发送（v2）
+# human_delay · 拟人延迟 + 分段发送
 
 **纯插件实现**，不依赖任何内核补丁。
 
-## 两条延迟
+## 两条延迟（不同公式）
 
-| 环节 | 计算 |
+| 环节 | 公式 |
 |---|---|
-| 首条 | `normal(mean=2.5, sigma=1.3)` clamp 到 0–5 秒 + `0.05×字数`，总上限 15 秒 |
-| 后续每条分段 | `max(1.5, 0.05×字数)` ← **地板 1.5 秒** |
+| **首条** | 正态 `gauss(2.5, 1.3)` 截断到 0–5 秒 + `0.05×字数`，总上限 15 秒 |
+| **断句后每条** | `max(1.5, 1.0 + 0.05×字数)` |
+
+首条抽样（10 字文本，跑的真实代码）：
+
+```
+1.80s  5.50s  1.99s  2.97s  0.99s  2.81s  4.33s  4.19s
+```
+
+断句后：
+
+| 字数 | 等待 |
+|---|---|
+| ≤10 | 1.50s（地板） |
+| 18 | 1.90s |
+| 30 | 2.50s |
+| 80 | 5.00s |
+
+改档位：`/config delay N` —— N=5 为默认（首条 0-5 秒正态均值 2.5 + 每字 0.05；断句后 1 + 每字 0.05，**地板恒 1.5**）
 
 ## 分段规则
 
 1. 按换行切
-2. 单行超过 40 字 → 再按 `，。！？；` 切
-3. ≤3 字的碎片并入上一段
-4. 最多 6 段，多余的并进最后一段
+2. 每行再按 `，。！？；~…` 切
+3. **带空格的句子按 12 字软上限切**（tidy 会把逗号变空格，所以「啊 我长这样 蓝毛女仆 行吧 我认」会拆成两条）
+4. 单段没空格又超 40 字 → 硬切
+5. ≤2 字的碎片并入上一段（且上一段不超过 8 字）
+6. 最多 6 段
 
-发送方式：首条交给 respond 正常发送；其余由插件自己 `sleep` 后 `event.send()`。
+示例：
+
+```
+啊 我长这样 蓝毛女仆 行吧 我认
+→ 1. 啊 我长这样 蓝毛女仆   (11 字)
+   2. 行吧 我认             (5 字)
+```
+
+发送方式：首条交给 respond 阶段正常发送；其余由插件自己 `sleep` 后 `event.send()`。
 
 ## 依赖
 
-**必须**把 AstrBot 内置分段关掉，否则会二次切分：
-
-```json
-"platform_settings": { "segmented_reply": { "enable": false } }
-```
+- 必须把内置的 `platform_settings.segmented_reply.enable` 设为 **false**，否则会双重分段（连逗号都切）
+- 必须关闭流式输出（`streaming_response=false`），流式没有"整条文本"可分
 
 ## 配置 `data/config/astrbot_plugin_human_delay_config.json`
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `enabled` | true | 开关 |
-| `distribution` | normal | `normal` / `uniform` |
-| `mean` / `sigma` | 2.5 / 1.3 | 基础延迟分布 |
-| `min_delay` / `max_delay` | 0 / 5 | 截断范围 |
+| `distribution` | normal | 首条基础延迟：`normal` / `uniform` |
+| `mean` / `sigma` | 2.5 / 1.3 | 首条正态参数 |
+| `min_delay` / `max_delay` | 0 / 5 | 首条截断范围 |
+| `base_delay` | **1.0** | 断句后每条的基础延迟 |
 | `per_char_seconds` | 0.05 | 每字打字时间 |
-| `segment_min_interval` | **1.5** | 分段地板 |
+| `segment_min_interval` | **1.5** | 断句后地板 |
+| `segment_max` | 6 | 最多几段 |
 | `max_total` | 15 | 单条上限 |
 
 ## 指令
 
-`/config delay 0-10` 由 config 插件改这个文件，**立即生效**（插件每次读盘）。
+- `/config delay 0-10` 调档位（0 = 关掉延迟，秒发）
+
+## 钩子
+
+`on_decorating_result`，priority `-100`（在 tidy 之后跑，拿到的是已清理的文本）。
