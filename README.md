@@ -46,6 +46,18 @@ scripts/make_perm.py        生成 cmd_perm.json（salt+sha256，不存明文 QQ
 | `priv_gate` | 非白名单清空 agent 工具集 |
 | `cmd_help` | `/cmd` 指令表 + **指令静默闸门**（非白名单发 `/` 指令直接丢弃） |
 
+## 各插件文档
+
+- [mem · 页/本/棚 三层记忆](plugins/astrbot_plugin_mem/README.md)
+- [mode · 人格 + 提示词分层](plugins/astrbot_plugin_mode/README.md)
+- [config · 统一配置入口](plugins/astrbot_plugin_config/README.md)
+- [addressee · 群聊接话状态机](plugins/astrbot_plugin_addressee/README.md)
+- [tidy · 真人口吻整理](plugins/astrbot_plugin_tidy/README.md)
+- [human_delay · 拟人延迟 + 分段发送](plugins/astrbot_plugin_human_delay/README.md)
+- [priv_gate · 权限闸门](plugins/astrbot_plugin_priv_gate/README.md)
+- [cmd_help · 指令表 + 指令闸门](plugins/astrbot_plugin_cmd_help/README.md)
+
+
 ## 指令
 
 ```
