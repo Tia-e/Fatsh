@@ -1,0 +1,6 @@
+{
+  "enabled": true,
+  "salt": "换成你自己的随机串",
+  "allowed_hashes": [],
+  "allowed_ids": []
+}

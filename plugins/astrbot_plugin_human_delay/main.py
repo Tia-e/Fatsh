@@ -1,3 +1,11 @@
+"""拟人延迟 + 分段发送（纯插件，不依赖任何内核补丁）
+
+- 第一条：正态/均匀基础延迟 + 每字打字时间
+- 后续分段：由本插件自己切分、自己 sleep、自己发送
+- 分段地板 1.5 秒（不再是内核里的 1.2）
+- 需要把 AstrBot 内置的 segmented_reply 关掉（enable=false），否则会重复切分
+"""
+
 import asyncio
 import json
 import os
@@ -5,20 +13,29 @@ import random
 import re
 
 from astrbot.api import logger
-from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.event import AstrMessageEvent, MessageChain, filter
+from astrbot.api.message_components import Plain
 from astrbot.api.star import Context, Star, register
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 DELAY_CFG = os.path.join("config", "astrbot_plugin_human_delay_config.json")
 
+MAX_SEG_CHARS = 40      # 单段超过这个长度再按句读二次切
+MAX_SEGMENTS = 6        # 一条回复最多拆几段
+MIN_SEG_CHARS = 3       # 太短的段并到上一段
 
-@register("astrbot_plugin_human_delay", "hermes", "发送回复前加随机延迟，像人在打字", "1.0.0")
+
+@register(
+    "astrbot_plugin_human_delay",
+    "hermes",
+    "拟人延迟 + 分段发送：首条随机延迟+打字时间，后续分段自己切、自己发（地板 1.5s）",
+    "2.0.0",
+)
 class HumanDelay(Star):
-    """在真正发出回复前等待一段随机时间，可选均匀/正态分布，并按字数追加"打字时间"。"""
-
     def __init__(self, context: Context, config=None):
         super().__init__(context)
         self.config = config or {}
+        self._cfg_cache = None
         try:
             logger.info(f"human_delay 生效配置: {dict(self.config)}")
         except Exception:
@@ -26,17 +43,23 @@ class HumanDelay(Star):
 
     # ---------- 配置 ----------
     def _cfg(self) -> dict:
-        """每次读文件，/config delay 改完立刻生效，不用重启。"""
         try:
             p = os.path.join(get_astrbot_data_path(), DELAY_CFG)
             if os.path.exists(p):
                 with open(p, "r", encoding="utf-8-sig") as f:
                     d = json.load(f)
                 if isinstance(d, dict):
+                    self._cfg_cache = d
                     return d
         except Exception:
             pass
-        return self.config if isinstance(self.config, dict) else {}
+        return self._cfg_cache or (self.config if isinstance(self.config, dict) else {})
+
+    def _per_char(self) -> float:
+        return float(self._cfg().get("per_char_seconds", 0.05))
+
+    def _floor(self) -> float:
+        return float(self._cfg().get("segment_min_interval", 1.5))
 
     # ---------- 计算 ----------
     def compute_delay(self, text_len: int) -> float:
@@ -46,7 +69,6 @@ class HumanDelay(Star):
         if hi < lo:
             lo, hi = hi, lo
         mode = str(cfg.get("distribution", "normal")).lower()
-
         if mode == "uniform":
             base = random.uniform(lo, hi)
         else:
@@ -54,71 +76,85 @@ class HumanDelay(Star):
             sigma = float(cfg.get("sigma", max((hi - lo) / 4.0, 0.5)))
             base = random.gauss(mean, sigma)
         base = min(max(base, lo), hi)
-
-        per_char = float(cfg.get("per_char_seconds", 0.05))
-        typing = max(0, text_len) * per_char
-
+        typing = max(0, text_len) * self._per_char()
         cap = float(cfg.get("max_total", 15))
         return max(0.0, min(base + typing, cap))
 
-    # ---------- 分段 ----------
-    def _first_segment_len(self, text: str) -> int:
-        """若开了 AstrBot 内置分段回复，用第一段的字数算打字时间。
+    def segment_delay(self, seg_len: int) -> float:
+        """分段之间的等待：取 地板 与 打字时间 的较大者。"""
+        return max(self._floor(), seg_len * self._per_char())
 
-        后续分段由 AstrBot 自己的 interval 控制（≈只算打字时间，不再加基础延迟）。
-        """
-        try:
-            p = os.path.join(get_astrbot_data_path(), "cmd_config.json")
-            with open(p, "r", encoding="utf-8-sig") as f:
-                cfg = json.load(f)
-            seg = ((cfg.get("platform_settings") or {}).get("segmented_reply")) or {}
-            if not seg.get("enable"):
-                return len(text)
-            threshold = int(seg.get("words_count_threshold", 60) or 60)
-            # AstrBot 的规则是：长度 <= 阈值 才拆分；超过阈值整条发
-            if len(text) > threshold:
-                return len(text)
-            pattern = seg.get("regex") or r".*?[。？！~…]+|.+$"
-            segs = [s.strip() for s in re.findall(pattern, text) if s and s.strip()]
-            if len(segs) <= 1:
-                return len(text)
-            logger.info(f"human_delay: 将分成 {len(segs)} 条发送，首条 {len(segs[0])} 字")
-            return len(segs[0])
-        except Exception:
-            return len(text)
+    # ---------- 切分 ----------
+    def split_segments(self, text: str) -> list[str]:
+        lines = [s.strip() for s in re.split(r"[\r\n]+", text) if s.strip()]
+        parts: list[str] = []
+        for line in lines:
+            if len(line) > MAX_SEG_CHARS:
+                pieces = [p.strip() for p in re.split(r"(?<=[，。！？；])", line) if p.strip()]
+                parts.extend(pieces or [line])
+            else:
+                parts.append(line)
+        merged: list[str] = []
+        for seg in parts:
+            if merged and len(seg) <= MIN_SEG_CHARS and len(merged[-1]) < 12:
+                merged[-1] = merged[-1] + seg
+            else:
+                merged.append(seg)
+        return merged[:MAX_SEGMENTS]
 
     # ---------- 钩子 ----------
-    @filter.on_decorating_result()
+    @filter.on_decorating_result(priority=-100)
     async def delay_before_send(self, event: AstrMessageEvent):
         cfg = self._cfg()
         if not cfg.get("enabled", True):
             return
 
-        # 指令类回复不延迟（/clear、/memstat 这些要秒回）
-        text_msg = (event.message_str or "").strip()
-        if text_msg.startswith("/"):
+        # 指令类回复不延迟
+        if (event.message_str or "").strip().startswith("/"):
             return
-        # 命中任何注册指令的回复也跳过（参数已被解析 = 是指令）
         if event.get_extra("handlers_parsed_params", {}) or event.get_extra("parsed_params", None):
             return
 
-        text = ""
+        res = event.get_result()
+        if res is None:
+            return
         try:
-            res = event.get_result()
-            if res is not None:
-                text = res.get_plain_text() or ""
+            chain = list(getattr(res, "chain", []) or [])
         except Exception:
-            text = ""
-
-        if not text.strip():
+            return
+        if not chain or not all(isinstance(c, Plain) for c in chain):
+            return  # 含图片/语音/At 的回复不接管
+        text = "".join(c.text or "" for c in chain).strip()
+        if not text:
             return
 
-        delay = self.compute_delay(self._first_segment_len(text))
-        if delay <= 0.05:
-            logger.info("human_delay: 延迟为 0，直接发送")
+        segs = self.split_segments(text)
+        if len(segs) <= 1:
+            delay = self.compute_delay(len(text))
+            if delay > 0.05:
+                logger.info(f"human_delay: 整条等待 {delay:.2f}s（{len(text)} 字）")
+                await asyncio.sleep(delay)
             return
-        logger.info(f"human_delay: 等待 {delay:.2f}s 后发送（{len(text)} 字）")
-        import time as _time
-        _t0 = _time.time()
-        await asyncio.sleep(delay)
-        logger.info(f"human_delay: 已等待 {_time.time() - _t0:.2f}s，开始发送")
+
+        # 只留第一段交给 respond 发送，其余由本插件排期发送
+        first = segs[0]
+        res.chain = [Plain(text=first)]
+        delay = self.compute_delay(len(first))
+        logger.info(
+            f"human_delay: 拆成 {len(segs)} 段，首条 {len(first)} 字等 {delay:.2f}s，"
+            f"后续间隔 ≥{self._floor():.1f}s"
+        )
+        if delay > 0.05:
+            await asyncio.sleep(delay)
+        asyncio.create_task(self._send_rest(event, segs[1:]))
+
+    async def _send_rest(self, event: AstrMessageEvent, segs: list[str]) -> None:
+        try:
+            for seg in segs:
+                await asyncio.sleep(self.segment_delay(len(seg)))
+                if not seg.strip():
+                    continue
+                await event.send(MessageChain([Plain(text=seg)]))
+                logger.info(f"human_delay: 已发送分段 {len(seg)} 字")
+        except Exception as e:
+            logger.error(f"human_delay: 分段发送失败 {e}")

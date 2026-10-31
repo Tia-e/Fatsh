@@ -1,6 +1,6 @@
 name: astrbot_plugin_mem
-display_name: 长期记忆
-desc: /mem 管理长期记忆：enable/disable/status/show/clear/clearall。默认关闭，开启后每 10 轮对话自动整理一次。
-version: v1.0.0
+display_name: 三层记忆
+desc: 小时层是一页可改的纸（不是每小时一个桶，上限可调，默认 15 条）；触发天整理 → 这一页冻结、翻开新页，旧页只作参考；天层是一本本子，触发长期整理 → 冻旧本换新本；页与本各留 2 格。整理全异步、强制开思考，冻结内容不注入。
+version: v3.2.0
 author: hermes
 repo: ""

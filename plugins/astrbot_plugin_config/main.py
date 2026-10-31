@@ -7,12 +7,11 @@ from astrbot.api.star import Context, Star, register
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 HELP_LINES = [
-    "/config             本说明",
-    "/config delay <0-10>  修改发送延迟：0=立刻发，5=0-5秒正态+每字0.05秒（默认），10=0-10秒+每字0.1秒",
-    "/config think <on|off> 模型思考开关，默认关",
-    "/config ctx <1-10>  上下文预算（单位 k tokens），默认 5 = 5k",
-    "/config prompt      输出这条会话实际发给模型的完整提示词（公用规则+场景+人格+记忆）",
-    "/config provider    查看当前使用的模型与候选模型",
+    "/config delay 0-10    改发送延迟（0=秒发，5=默认，10=最慢）",
+    "/config think on|off  改思考开关（默认关；整理记忆时始终开）",
+    "/config ctx 2-32      改上下文预算（单位 k，默认 16）",
+    "/config prompt        看这条会话的完整提示词",
+    "/config provider      看当前模型",
 ]
 
 DELAY_CFG = "config/astrbot_plugin_human_delay_config.json"
@@ -21,6 +20,12 @@ MODE_STATE = "mode_state.json"
 
 def _data_path(*parts: str) -> str:
     return os.path.join(get_astrbot_data_path(), *parts)
+
+
+def _pad(s: str, width: int) -> str:
+    """按显示宽度补空格（中文算 2 格）。"""
+    w = sum(2 if ord(c) > 127 else 1 for c in s)
+    return s + " " * max(1, width - w)
 
 
 def _read_json(path: str, default):
@@ -149,6 +154,8 @@ class ConfigCmd(Star):
         return ids
 
     # ---------- 上下文预算 ----------
+    CTX_MIN, CTX_MAX, CTX_DEFAULT = 2, 32, 16
+
     def _ctx_level(self, event: AstrMessageEvent) -> int:
         try:
             cfg = self.context.get_config(umo=event.unified_msg_origin) or {}
@@ -156,11 +163,11 @@ class ConfigCmd(Star):
                 cfg.get("agent_runner", {})
                 .get("config", {})
                 .get("compression", {})
-                .get("fallback_max_tokens", 5000)
+                .get("fallback_max_tokens", self.CTX_DEFAULT * 1000)
             )
-            return max(1, min(10, round(v / 1000)))
+            return max(self.CTX_MIN, min(self.CTX_MAX, round(v / 1000)))
         except Exception:
-            return 5
+            return self.CTX_DEFAULT
 
     def _apply_ctx(self, event: AstrMessageEvent, level: int) -> dict:
         cfg = self.context.get_config(umo=event.unified_msg_origin)
@@ -205,10 +212,15 @@ class ConfigCmd(Star):
         raw = self._arg(event)
         if not raw:
             _on, _ = self._think_state(event)
+            _dly = _read_json(_data_path(DELAY_CFG), {}) or {}
             yield event.plain_result(
-                "⚙️ 当前延迟档位：" + str(self._delay_level()) + "（0=秒发，5=默认，10=最慢）\n"
-                f"🧠 思考：" + ("开" if _on else "关") + "（默认关）\n"
-                f"📦 上下文预算：" + str(self._ctx_level(event)) + "k tokens（1-10，默认 5）\n\n"
+                "⚙️ 配置\n"
+                "────────────────────────\n"
+                f"{_pad('延迟', 8)}{self._delay_level()} 档 · 每字 {_dly.get('per_char_seconds', 0)} 秒"
+                " · 分段最低 1.2 秒\n"
+                f"{_pad('思考', 8)}{'开' if _on else '关'}\n"
+                f"{_pad('上下文', 8)}{self._ctx_level(event)}k tokens\n"
+                "────────────────────────\n"
                 + "\n".join(HELP_LINES)
             )
             return
@@ -240,11 +252,13 @@ class ConfigCmd(Star):
             cfg = self._apply_delay(level)
             if level == 0:
                 self._maybe_zero_chars()
-                yield event.plain_result("✅ 发送延迟已设为 0：立刻发送")
+                yield event.plain_result("✅ 发送延迟已设为 0：立刻发送（分段也不等）")
             else:
                 yield event.plain_result(
                     f"✅ 发送延迟已设为 {level}：基础 0-{level} 秒（正态，均值 {level/2:.1f}）"
                     f" + 每字 {level*0.01:.2f} 秒"
+                    f"\n分段之间最低间隔 {cfg.get('segment_min_interval', 0):.1f} 秒"
+                    f"（长句按 每字×字数 算，取两者较大值）"
                 )
             logger.info(f"config: delay -> {cfg}")
             return
@@ -293,21 +307,22 @@ class ConfigCmd(Star):
             if not rest:
                 yield event.plain_result(
                     f"📦 当前上下文预算：{self._ctx_level(event)}k tokens\n"
-                    "用法：/config ctx <1-10>（1=1k，10=10k，默认 5）"
+                    "用法：/config ctx <2-32>（2=2k，32=32k，默认 16）"
                 )
                 return
             try:
                 level = int(rest)
             except ValueError:
-                yield event.plain_result("参数必须是 1-10 的整数")
+                yield event.plain_result("参数必须是 2-32 的整数")
                 return
-            if level < 1 or level > 10:
-                yield event.plain_result("参数必须在 1-10 之间")
+            if level < self.CTX_MIN or level > self.CTX_MAX:
+                yield event.plain_result("参数必须在 2-32 之间")
                 return
             comp = self._apply_ctx(event, level)
             yield event.plain_result(
                 f"✅ 上下文预算已设为 {level}k tokens\n"
-                f"超出后丢弃最早的对话轮次（不额外调模型）；当前上限 {comp.get('fallback_max_tokens')}"
+                f"当前上限 {comp.get('fallback_max_tokens')}\n"
+                "（重启 AstrBot 后生效；超出后丢最早的轮次，不额外调模型）"
             )
             return
 

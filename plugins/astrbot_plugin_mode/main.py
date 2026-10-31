@@ -58,8 +58,25 @@ MODES: dict[str, str | None] = {
 
 MODE_ORDER = ["默认", "软萌", "贴吧老哥", "傲娇", "毒舌"]
 
-# 放在 system_prompt 最末尾（越靠后模型越容易照做）
-FINAL_REMINDER = "【最后再说一遍】短句 每行别超过 18 字 不打句号 一条最多三行 想多说就换行 别发一整段"
+
+def _load_chat_rules() -> str:
+    """聊天规则优先读 data/prompt/chat_rules.md（可手改，改完重启生效）。"""
+    try:
+        p = os.path.join(get_astrbot_data_path(), "prompt", "chat_rules.md")
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
+                t = f.read().strip()
+            if t:
+                return t
+    except Exception:
+        pass
+    return OUTPUT_RULES
+
+
+def _pad(s: str, width: int) -> str:
+    """按显示宽度补空格（中文算 2 格）。"""
+    w = sum(2 if ord(c) > 127 else 1 for c in s)
+    return s + " " * max(1, width - w)
 
 
 def _state_path() -> str:
@@ -124,6 +141,7 @@ class ModeSwitch(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
         self.config = config or {}
+        self._rules = _load_chat_rules()
         # 把人格提示词落一份给 /config 用，避免跨插件 import
         try:
             p = _state_path().replace("mode_state.json", "mode_prompts.json")
@@ -170,7 +188,7 @@ class ModeSwitch(Star):
                 return (
                     "【现在在哪】QQ 私聊，对面是你的主人。\n"
                     "【能力】你可以用 agent 能力（真的能查资料、操作电脑、建定时任务），需要就直接用。\n"
-                    "【语气】对她软一点、亲近一点，可以撒娇，别端着。"
+                    "【语气】对TA软一点、亲近一点，可以撒娇，别端着。"
                 )
             return (
                 "【现在在哪】QQ 私聊，对面是个普通网友"
@@ -230,14 +248,12 @@ class ModeSwitch(Star):
 
             persona = (custom or base or "").strip()
 
-            parts = [OUTPUT_RULES.strip()]
+            parts = [self._rules.strip()]
             parts.append(self._scene_block(event))
             if persona:
                 parts.append(persona)
             if rest:
                 parts.append(rest)
-            # 最近生效原则：把最关键的格式要求再放一次到最末尾
-            parts.append(FINAL_REMINDER)
             req.system_prompt = "\n\n".join(parts)
 
             self._last = {
@@ -305,19 +321,27 @@ class ModeSwitch(Star):
         return text.strip()
 
     def _help_text(self, current: str) -> str:
-        lines = ["🎭 人格模式", f"当前：{current}", "", "可用："]
         desc = {
-            "默认": "原来的大肥鱼",
-            "软萌": "软软的、撒娇但不油腻",
-            "贴吧老哥": "评论区楼中楼，绷/典/急了",
-            "傲娇": "嘴硬心软，哼/才不是",
-            "毒舌": "精准吐槽，不脏不伤人",
+            "默认": "大肥鱼原味",
+            "软萌": "软软的 撒娇但不油腻",
+            "贴吧老哥": "绷 典 急了",
+            "傲娇": "嘴硬心软 哼",
+            "毒舌": "精准吐槽 不脏人",
         }
+        lines = [
+            "🎭 人格模式",
+            "────────────────────────",
+            f"当前   {current}",
+            "",
+        ]
         for m in MODE_ORDER:
-            mark = " ←" if m == current else ""
-            lines.append(f"· {m} — {desc.get(m, '')}{mark}")
-        lines.append("")
-        lines.append("用法：/mode 软萌   切回：/mode 默认")
+            mark = "  ←" if m == current else ""
+            lines.append(f"{_pad(m, 8)} {desc.get(m, '')}{mark}")
+        lines += [
+            "────────────────────────",
+            "/mode 软萌   切到这个人格",
+            "/mode        看这张表",
+        ]
         return "\n".join(lines)
 
     @filter.command("mode")

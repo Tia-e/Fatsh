@@ -1,6 +1,6 @@
 name: astrbot_plugin_human_delay
-display_name: 拟人延迟
-desc: 回复前等一段随机时间（正态/均匀），并按回复字数追加打字时间，看起来像真人在打。
-version: v1.0.0
+display_name: 拟人延迟 + 分段
+desc: 首条按正态延迟+字数打字时间；后续分段由本插件自己切分、自己发送，地板 1.5 秒。需要把内置 segmented_reply 关掉。
+version: v2.0.0
 author: hermes
 repo: ""

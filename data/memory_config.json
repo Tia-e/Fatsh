@@ -1,0 +1,21 @@
+{
+  "enabled": true,
+  "hour_gap_seconds": 3600,
+  "day_gap_seconds": 86400,
+  "profile_gap_seconds": 259200,
+  "keep_pages": 2,
+  "profile_cap": 40,
+  "max_items": {
+    "hour": 20,
+    "day": 12,
+    "profile": 8
+  },
+  "inject": {
+    "hour_items": 20,
+    "day_items": 12,
+    "profile_items": 8
+  },
+  "buffer_max": 200,
+  "hour_input_max": 150,
+  "min_new_entries": 6
+}

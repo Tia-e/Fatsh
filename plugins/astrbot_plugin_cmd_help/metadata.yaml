@@ -1,6 +1,6 @@
 name: astrbot_plugin_cmd_help
-display_name: 指令表
-desc: 用 /cmd（或 /指令）查看全部指令及作用，含权限说明；补齐内置 /help 只列内置指令的空缺。
-version: v1.0.0
+display_name: 指令表 + 闸门
+desc: /cmd 中文指令表；同时承担指令静默闸门——非白名单发送者发 "/" 开头消息直接丢弃，不回复不执行。
+version: v2.0.0
 author: hermes
 repo: ""

@@ -9,5 +9,5 @@
   "structured_cooldown_seconds": 60,
   "structured_max_per_sender": 2,
   "night_silence": ["23:00", "08:00"],
-  "groups": ["*"]
+  "groups": ["123456789"]
 }
