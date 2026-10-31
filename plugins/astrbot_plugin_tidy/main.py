@@ -133,14 +133,14 @@ class TidyReply(Star):
                 continue
             final.append(ln)
 
-        # 5) 合并过短的行（<8 字）到相邻行，减少碎片
+        # 5) 只把真正的碎片（≤3 字，如"嗯/行/草"）并到上一行；完整短句保留，交给分段器
         merged = []
         for ln in final:
-            if merged and len(ln) < 8:
+            if merged and len(ln) <= 3:
                 merged[-1] = merged[-1] + " " + ln
             else:
                 merged.append(ln)
-        if len(merged) >= 2 and len(merged[0]) < 8:
+        if len(merged) >= 2 and len(merged[0]) <= 3:
             merged[1] = merged[0] + " " + merged[1]
             merged.pop(0)
 

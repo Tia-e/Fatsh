@@ -21,6 +21,7 @@ from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 DELAY_CFG = os.path.join("config", "astrbot_plugin_human_delay_config.json")
 
 MAX_SEG_CHARS = 40      # 单段超过这个长度再按句读二次切
+SOFT_MAX_CHARS = 12     # 有空格的句子按这个长度软切（"啊 我长这样 蓝毛女仆" → 断成两三条）
 MAX_SEGMENTS = 6        # 一条回复最多拆几段
 MIN_SEG_CHARS = 3       # 太短的段并到上一段
 
@@ -89,14 +90,32 @@ class HumanDelay(Star):
         lines = [s.strip() for s in re.split(r"[\r\n]+", text) if s.strip()]
         parts: list[str] = []
         for line in lines:
-            if len(line) > MAX_SEG_CHARS:
-                pieces = [p.strip() for p in re.split(r"(?<=[，。！？；])", line) if p.strip()]
-                parts.extend(pieces or [line])
-            else:
-                parts.append(line)
+            # 1) 有句读的先按句读切
+            pieces = [p.strip() for p in re.split(r"(?<=[，。！？；~…])", line) if p.strip()]
+            for piece in pieces or [line]:
+                # 2) 有空格的长句：按空格做"软切"，每段不超过 SOFT_MAX_CHARS
+                words = piece.split()
+                if len(words) > 1:
+                    buf = ""
+                    for word in words:
+                        cand = f"{buf} {word}".strip()
+                        if buf and len(cand) > SOFT_MAX_CHARS:
+                            parts.append(buf)
+                            buf = word
+                        else:
+                            buf = cand
+                    if buf:
+                        parts.append(buf)
+                elif len(piece) > MAX_SEG_CHARS:
+                    # 3) 没空格又超长：硬切
+                    parts.extend(
+                        piece[i : i + MAX_SEG_CHARS] for i in range(0, len(piece), MAX_SEG_CHARS)
+                    )
+                else:
+                    parts.append(piece)
         merged: list[str] = []
         for seg in parts:
-            if merged and len(seg) <= MIN_SEG_CHARS and len(merged[-1]) < 12:
+            if merged and len(seg) <= 2 and len(merged[-1]) <= 8:
                 merged[-1] = merged[-1] + seg
             else:
                 merged.append(seg)
