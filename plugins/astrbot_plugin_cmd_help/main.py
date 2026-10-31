@@ -18,7 +18,7 @@ from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 HELP_TEXT = """📋 指令表
 ────────────────────────
-/mem        记忆（页/本/棚）：开关/查看/整理
+/mem        记忆（页/本/棚）：开关/查看/分页/整理
 /config     延迟 思考 上下文 提示词
 /mode       人格风格（5 套）
 /reset      清空当前会话上下文

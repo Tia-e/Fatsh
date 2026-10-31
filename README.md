@@ -37,7 +37,7 @@ scripts/make_perm.py        生成 cmd_perm.json（salt+sha256，不存明文 QQ
 
 | 插件 | 作用 |
 |---|---|
-| `mem` | 页/本/棚三层记忆：小时层是一页可改的纸，触发天整理冻结换新页；天层是一本，触发长期整理冻旧本换新本 |
+| `mem` | 页/本/棚三层记忆：每 40 轮归档一个分片，分片满就整理页；页 5 次→本吸、本 5 次→棚吸；自建 json 存储，不依赖 sqlite 上下文窗口 |
 | `mode` | 5 套人格 + 提示词分层：公用规则 → 场景 → 人格 → 记忆块 |
 | `config` | `/config delay|think|ctx|prompt|provider` |
 | `addressee` | 群聊三态接话（闲置 10% 掷骰、模型可输出 `<不接>`、夜间静默） |
@@ -64,9 +64,9 @@ scripts/make_perm.py        生成 cmd_perm.json（salt+sha256，不存明文 QQ
 /mem            记忆状态
 /mem on|off     开关
 /mem show       看会注入的内容
-/mem clear      清空本会话
-/mem gen 6      手动整理最近 6 小时（0=全部历史）
-/mem limit 100  单次整理喂多少条（50-250）
+/mem clear      清空本会话（分片保留）
+/mem page 0-100 每页多少轮（默认 40）
+/mem gen 0-10   拿最近 N 个分片整理（0=全部）
 /config ...     延迟/思考/上下文/提示词/模型
 /mode           人格列表，/mode 软萌 切换
 /cmd            指令表
