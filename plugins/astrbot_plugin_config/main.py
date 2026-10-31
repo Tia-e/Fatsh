@@ -7,7 +7,7 @@ from astrbot.api.star import Context, Star, register
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 HELP_LINES = [
-    "/config delay 0-10    改发送延迟（0=秒发，5=默认，10=最慢）",
+    "/config delay 0-10    改发送延迟（5=1秒+每字0.05秒，地板1.5；10=2秒+每字0.1秒）",
     "/config think on|off  改思考开关（默认关；整理记忆时始终开）",
     "/config ctx 2-32      改上下文预算（单位 k，默认 16）",
     "/config prompt        看这条会话的完整提示词",
@@ -84,25 +84,22 @@ class ConfigCmd(Star):
         if level == 0:
             new = {
                 "enabled": False,
-                "distribution": "normal",
-                "mean": 0.0,
-                "sigma": 0.0,
-                "min_delay": 0.0,
-                "max_delay": 0.0,
+                "distribution": "fixed",
+                "base_delay": 0.0,
                 "per_char_seconds": 0.0,
+                "segment_min_interval": 0.0,
+                "segment_max": 6,
                 "max_total": 15.0,
             }
         else:
             new = {
                 "enabled": True,
-                "distribution": "normal",
-                "mean": round(level * 0.5, 2),
-                "sigma": round(level * 0.26, 2),
-                "min_delay": 0.0,
-                "max_delay": float(level),
+                "distribution": "fixed",
+                # 档位 5 = 1 秒基础 + 每字 0.05 秒（默认），分段地板固定 1.5 秒
+                "base_delay": round(level * 0.2, 2),
                 "per_char_seconds": round(level * 0.01, 3),
-                # 分段之间的最低间隔：档位 5 → 1.2 秒，档位 10 → 2.4 秒
-                "segment_min_interval": round(level * 0.24, 2),
+                "segment_min_interval": 1.5,
+                "segment_max": 6,
                 "max_total": 15.0,
             }
         _write_json(_data_path(DELAY_CFG), new)
@@ -255,10 +252,9 @@ class ConfigCmd(Star):
                 yield event.plain_result("✅ 发送延迟已设为 0：立刻发送（分段也不等）")
             else:
                 yield event.plain_result(
-                    f"✅ 发送延迟已设为 {level}：基础 0-{level} 秒（正态，均值 {level/2:.1f}）"
-                    f" + 每字 {level*0.01:.2f} 秒"
-                    f"\n分段之间最低间隔 {cfg.get('segment_min_interval', 0):.1f} 秒"
-                    f"（长句按 每字×字数 算，取两者较大值）"
+                    f"✅ 发送延迟已设为 {level}：基础 {cfg.get('base_delay', 0):.1f} 秒"
+                    f" + 每字 {cfg.get('per_char_seconds', 0):.2f} 秒"
+                    f"\n地板 {cfg.get('segment_min_interval', 1.5):.1f} 秒（不足就按地板发）"
                 )
             logger.info(f"config: delay -> {cfg}")
             return

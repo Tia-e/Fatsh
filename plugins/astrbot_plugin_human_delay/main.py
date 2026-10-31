@@ -63,27 +63,21 @@ class HumanDelay(Star):
         return float(self._cfg().get("segment_min_interval", 1.5))
 
     # ---------- 计算 ----------
-    def compute_delay(self, text_len: int) -> float:
+    def _delay_for(self, chars: int) -> float:
+        """固定模型：base_delay + per_char×字数，最低 floor 秒。"""
         cfg = self._cfg()
-        lo = float(cfg.get("min_delay", 0))
-        hi = float(cfg.get("max_delay", 10))
-        if hi < lo:
-            lo, hi = hi, lo
-        mode = str(cfg.get("distribution", "normal")).lower()
-        if mode == "uniform":
-            base = random.uniform(lo, hi)
-        else:
-            mean = float(cfg.get("mean", (lo + hi) / 2))
-            sigma = float(cfg.get("sigma", max((hi - lo) / 4.0, 0.5)))
-            base = random.gauss(mean, sigma)
-        base = min(max(base, lo), hi)
-        typing = max(0, text_len) * self._per_char()
+        base = float(cfg.get("base_delay", 1.0))
+        per_char = self._per_char()
+        floor = self._floor()
         cap = float(cfg.get("max_total", 15))
-        return max(0.0, min(base + typing, cap))
+        return max(0.0, min(max(floor, base + chars * per_char), cap))
+
+    def compute_delay(self, text_len: int) -> float:
+        return self._delay_for(text_len)
 
     def segment_delay(self, seg_len: int) -> float:
-        """分段之间的等待：取 地板 与 打字时间 的较大者。"""
-        return max(self._floor(), seg_len * self._per_char())
+        """分段之间的等待：同一个公式（1 + 0.05×字数，地板 1.5）。"""
+        return self._delay_for(seg_len)
 
     # ---------- 切分 ----------
     def split_segments(self, text: str) -> list[str]:
