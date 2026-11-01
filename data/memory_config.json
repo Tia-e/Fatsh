@@ -9,13 +9,22 @@
   "keep_pages": 2,
   "profile_cap": 40,
   "max_items": {
-    "hour": 20,
-    "day": 12,
-    "profile": 8
+    "hour": 25,
+    "day": 15,
+    "profile": 10
+  },
+  "importance_quota": {
+    "hour": { "5": null, "4": 12, "3": 8 },
+    "day": { "5": null, "4": 8, "3": 6 },
+    "profile": { "5": null, "4": 8 }
+  },
+  "min_importance": {
+    "day": 3,
+    "profile": 3
   },
   "inject": {
-    "hour_items": 20,
-    "day_items": 12,
-    "profile_items": 8
+    "hour_items": 25,
+    "day_items": 15,
+    "profile_items": 10
   }
 }

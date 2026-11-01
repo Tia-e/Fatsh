@@ -46,8 +46,16 @@ DEFAULT_CFG = {
     "idle_min_turns": 10,     # 且攒了这么多轮 → 提前整理
     "keep_pages": 2,          # 页/本各留 2 格（当前 + 冻结）
     "profile_cap": 40,
-    "max_items": {"hour": 20, "day": 12, "profile": 8},
-    "inject": {"hour_items": 20, "day_items": 12, "profile_items": 8},
+    "max_items": {"hour": 25, "day": 15, "profile": 10},
+    # importance 名额：None=不限，数字=该档最多几条；没列出的档位只当补位
+    "importance_quota": {
+        "hour": {"5": None, "4": 12, "3": 8},
+        "day": {"5": None, "4": 8, "3": 6},
+        "profile": {"5": None, "4": 8},
+    },
+    # 本/棚 只收 importance ≥ 这个值的条目
+    "min_importance": {"day": 3, "profile": 3},
+    "inject": {"hour_items": 25, "day_items": 15, "profile_items": 10},
 }
 
 TIER_CN = {"hour": "页（最近一段记忆）", "day": "本（这几天）", "profile": "棚（长期画像）"}
@@ -87,6 +95,20 @@ MEMO_SYSTEM = """你是「大肥鱼」。现在你要整理一下你和 TA 这�
   TA是我的「主人」，性格与语气由TA一手养成
   TA自己写代码，设计记忆分层和人格系统，方案由TA主导
   TA不喜欢把方案全权交给 agent，觉得套路、没人味
+
+【importance 怎么打分】
+5 = 身份 / 关系定位 / 核心承诺（TA 是谁、我们之间的定位、说死的约定）
+4 = 明确偏好、雷区、待办（讨厌客服腔、约好明天做什么）
+3 = 稳定事实（语言能力、职业、作息）
+2 = 偏好细节、口味
+1 = 可丢的琐事
+
+【最容易搞错的地方（重点）】
+- **玩笑不是事实**：TA 开玩笑说「砍头炖身子」，说明的只是「爱逗、梗多」，可以记「TA 爱开猎奇玩笑」，
+  但**绝不能**记成「TA 喜欢猎奇 / 喜欢暴力 / 想砍人」——那是把梗当人格
+- **单次不是模式**：一次「今天烦死了」不等于脾气差；一次玩笑不等于这个人爱开玩笑
+- **我推出来的东西不记**：只记 TA 明确说过的、或反复出现过的；从玩笑里脑补的人格一律丢掉
+- **拿不准就给低分**：宁可记成 2 分的细节，也不要拔高成 5 分的人格断言
 
 【怎么改这一页】
 - 这是我自己的一页本子，可以随时增、删、改，不是只许追加
@@ -542,9 +564,9 @@ class MemV4(Star):
         return None
 
     @staticmethod
-    def _norm(items: list, cap: int) -> list:
-        """去重 + 按 importance 从高到低排，超上限先丢低价值的。"""
-        out, seen = [], set()
+    def _norm(items: list, cap: int, quota: dict | None = None, min_imp: int = 1) -> list:
+        """去重 → importance 降序 → 按档位名额录取 → 不足则用低档补位。"""
+        cleaned, seen = [], set()
         now = time.strftime("%Y-%m-%d %H:%M:%S")
         for it in items:
             if not isinstance(it, dict):
@@ -556,7 +578,7 @@ class MemV4(Star):
             if key in seen:
                 continue
             seen.add(key)
-            out.append(
+            cleaned.append(
                 {
                     "content": c[:60],
                     "type": str(it.get("type") or "talk"),
@@ -564,8 +586,35 @@ class MemV4(Star):
                     "updated_at": now,
                 }
             )
-        out.sort(key=lambda x: -int(x.get("importance", 3)))
-        return out[:cap]
+        cleaned.sort(key=lambda x: -int(x.get("importance", 3)))
+
+        if not quota:
+            return [i for i in cleaned if i["importance"] >= min_imp][:cap]
+
+        kept, used = [], {}
+        for idx, it in enumerate(cleaned):
+            imp = int(it["importance"])
+            if imp < min_imp:
+                continue
+            lim = quota.get(str(imp), quota.get(imp, 0))
+            if lim is None or used.get(imp, 0) < int(lim):
+                kept.append(idx)
+                used[imp] = used.get(imp, 0) + 1
+                if len(kept) >= cap:
+                    break
+        # 名额没用满 → 用**没设名额的档位**（1-2 分这类）补位；设了名额的档位不再超额
+        if len(kept) < cap:
+            quoted = {int(k) for k in quota.keys()}
+            for idx, it in enumerate(cleaned):
+                if idx in kept:
+                    continue
+                imp = int(it["importance"])
+                if imp < min_imp or imp in quoted:
+                    continue
+                kept.append(idx)
+                if len(kept) >= cap:
+                    break
+        return [cleaned[i] for i in sorted(kept, key=lambda i: -cleaned[i]["importance"])]
 
     # ---------------- 收集一轮 ----------------
     @filter.on_llm_response()
@@ -653,6 +702,15 @@ class MemV4(Star):
             await self._maybe_book(umo)
         return ok
 
+    def _quota(self, cfg: dict, tier: str) -> dict:
+        q = (cfg.get("importance_quota") or {}).get(tier)
+        if isinstance(q, dict):
+            return {int(k): (None if v is None else int(v)) for k, v in q.items()}
+        return {}
+
+    def _min_imp(self, cfg: dict, tier: str) -> int:
+        return int((cfg.get("min_importance") or {}).get(tier, 1))
+
     # ---------------- 页整理 ----------------
     async def _consolidate_page(self, umo: str, seq: int) -> bool:
         cfg = self._cfg()
@@ -674,7 +732,9 @@ class MemV4(Star):
         if items is None:
             logger.error("mem4: 页整理返回无法解析，保持原页")
             return False
-        page["items"] = self._norm(items, int(cfg["max_items"].get("hour", 20)))
+        page["items"] = self._norm(
+            items, int(cfg["max_items"].get("hour", 25)), self._quota(cfg, "hour")
+        )
         page["state"] = "mutable"
         rec["hour"]["last_at"] = time.time()
         await self.store.save()
@@ -713,7 +773,12 @@ class MemV4(Star):
         if items is None:
             logger.error("mem4: 本整理返回无法解析")
             return False
-        book["items"] = self._norm(items, int(cfg["max_items"].get("day", 12)))
+        book["items"] = self._norm(
+            items,
+            int(cfg["max_items"].get("day", 15)),
+            self._quota(cfg, "day"),
+            self._min_imp(cfg, "day"),
+        )
         book["state"] = "mutable"
         _freeze_page(rec, "hour")
         _ensure_page(rec, "hour")
@@ -751,8 +816,10 @@ class MemV4(Star):
         if items is None:
             logger.error("mem4: 棚整理返回无法解析")
             return False
-        cap = min(int(cfg["max_items"].get("profile", 8)), int(cfg.get("profile_cap", 40)))
-        rec["profile"]["items"] = self._norm(items, cap)
+        cap = min(int(cfg["max_items"].get("profile", 10)), int(cfg.get("profile_cap", 40)))
+        rec["profile"]["items"] = self._norm(
+            items, cap, self._quota(cfg, "profile"), self._min_imp(cfg, "profile")
+        )
         rec["profile"]["last_at"] = time.time()
         _freeze_page(rec, "day")
         _ensure_page(rec, "day")
@@ -869,9 +936,9 @@ class MemV4(Star):
         rec = self.store.umo(umo)
         hp = _current_page(rec, "hour") or {}
         dp = _current_page(rec, "day") or {}
-        cap_h = int(cfg["max_items"].get("hour", 20))
-        cap_d = int(cfg["max_items"].get("day", 12))
-        cap_p = int(cfg["max_items"].get("profile", 8))
+        cap_h = int(cfg["max_items"].get("hour", 25))
+        cap_d = int(cfg["max_items"].get("day", 15))
+        cap_p = int(cfg["max_items"].get("profile", 10))
         n = int(cfg["page_turns"])
         turns = int(rec["hour"].get("turns_in_file") or 0)
         done_h = int(rec["hour"].get("pages_done") or 0)
