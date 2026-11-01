@@ -41,7 +41,7 @@ DEFAULT_CFG = {
     "page_turns": 40,
     "book_pages": 5,          # 几次页整理 → 一次本整理
     "profile_books": 5,       # 几次本整理 → 一次棚整理
-    "archive_keep": 10,       # 分片目录最多留几个 json
+    "archive_keep": 10,       # 已废弃（现在每人只有一个 <QQ>.json）
     "idle_seconds": 1800,     # 空闲兜底：这么久没新消息
     "idle_min_turns": 10,     # 且攒了这么多轮 → 提前整理
     "keep_pages": 2,          # 页/本各留 2 格（当前 + 冻结）
@@ -282,6 +282,104 @@ def _turns_to_text(turns: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _merge_old_segments(key: str) -> None:
+    """旧分片里没整理过的轮次并入 <QQ>.json，然后删掉全部 seg-*.json。"""
+    seqs = _seg_list(key)
+    if not seqs:
+        return
+    pending: list[dict] = []
+    for sq in seqs:
+        node = _seg_read(key, sq) or {}
+        if node.get("closed_at") is None:
+            pending.extend(node.get("turns") or [])
+    if pending:
+        node = _turns_read(key) or _turns_blank(key)
+        exist = node.get("turns") or []
+        seen = {(t.get("ts"), t.get("user", ""), t.get("reply", "")) for t in exist}
+        for t in pending:
+            k2 = (t.get("ts"), t.get("user", ""), t.get("reply", ""))
+            if k2 in seen:
+                continue
+            seen.add(k2)
+            exist.append(t)
+        node["turns"] = exist
+        _turns_write(key, node)
+    for sq in seqs:
+        try:
+            os.remove(_seg_path(key, sq))
+        except Exception:
+            pass
+    logger.info(f"mem4: 旧分片 {len(seqs)} 个已并入 {_qq_of_key(key)}.json（带过来待整理 {len(pending)} 轮）")
+
+
+# ---------------- 待整理对话：每人一个 <QQ>.json ----------------
+def _turns_path(key: str) -> str:
+    qq = _qq_of_key(key) or "unknown"
+    return os.path.join(_person_dir(key), f"{qq}.json")
+
+
+def _turns_blank(key: str) -> dict:
+    return {"key": key, "qq": _qq_of_key(key), "opened_at": time.time(), "turns": []}
+
+
+def _turns_read(key: str) -> dict | None:
+    try:
+        with open(_turns_path(key), "r", encoding="utf-8-sig") as f:
+            d = json.load(f)
+        if isinstance(d, dict):
+            d.setdefault("turns", [])
+            return d
+    except Exception:
+        return None
+    return None
+
+
+def _turns_write(key: str, node: dict) -> None:
+    d = _person_dir(key)
+    os.makedirs(d, exist_ok=True)
+    p = _turns_path(key)
+    tmp = p + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(node, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, p)
+
+
+def _turns_clear(key: str) -> None:
+    node = _turns_read(key) or _turns_blank(key)
+    node["turns"] = []
+    node["opened_at"] = time.time()
+    node["last_consolidated"] = time.time()
+    _turns_write(key, node)
+
+
+def _turns_list(key: str) -> list[dict]:
+    node = _turns_read(key) or {}
+    turns = node.get("turns")
+    if not isinstance(turns, list):
+        return []
+    changed = False
+    for t in turns:
+        if isinstance(t, dict) and "src" not in t:
+            t["src"] = "private"
+            changed = True
+    if changed:
+        node["turns"] = turns
+        _turns_write(key, node)
+    return turns
+
+
+def _turns_to_text(turns: list[dict]) -> str:
+    lines = []
+    for t in turns:
+        when = time.strftime("%m-%d %H:%M", time.localtime(t.get("ts", 0)))
+        src = "群" if str(t.get("src") or "").lower().startswith("group") else "私聊"
+        if t.get("user"):
+            lines.append(f"[{when}|{src}] 用户：{t['user']}")
+        if t.get("reply"):
+            lines.append(f"[{when}|{src}] 你：{t['reply']}")
+    return "\n".join(lines)
+
+
 def _render_items(items: list) -> str:
     if not items:
         return "[]"
@@ -380,6 +478,8 @@ class _Mem:
                     rec = self._blank_rec()
                 self._recs[f"person:{name}"] = self._migrate(rec)
         self._migrate_legacy()
+        for k in list(self._recs.keys()):
+            _merge_old_segments(k)   # 旧分片 → <QQ>.json（没有分片时直接返回）
         return self._recs
 
     def _migrate_legacy(self) -> None:
@@ -735,79 +835,36 @@ class MemV4(Star):
 
     async def _append_turn(self, key: str, user: str, reply: str, src: str = "private") -> None:
         async with self._lock(key):
-            cfg = self._cfg()
-            rec = self.store.umo(key)
-            seq = int(rec["hour"].get("seq") or 0)
-            if seq <= 0 or rec["hour"].get("file") != f"seg-{seq:04d}.json":
-                seq = max(_seg_list(key) + [0]) + 1
-                rec["hour"]["seq"] = seq
-                rec["hour"]["file"] = f"seg-{seq:04d}.json"
-            node = _seg_read(key, seq) or {
-                "seq": seq,
-                "key": key,
-                "qq": _qq_of_key(key),
-                "opened_at": time.time(),
-                "turns": [],
-            }
+            node = _turns_read(key) or _turns_blank(key)
             node.setdefault("turns", [])
             node["turns"].append({"ts": time.time(), "user": user, "reply": reply, "src": src})
-            node["closed_at"] = None
-            _seg_write(key, seq, node)
+            node["updated_at"] = time.time()
+            _turns_write(key, node)
+            rec = self.store.umo(key)
             rec["hour"]["turns_in_file"] = len(node["turns"])
             rec["hour"]["last_turn_at"] = time.time()
             await self.store.save(key)
 
-    async def _after_turn(self, umo: str) -> None:
-        """每轮结束都看一下：当前分片是否写满。"""
+    async def _after_turn(self, key: str) -> None:
+        """每轮结束看一下：待整理的轮数够不够。"""
         try:
             cfg = self._cfg()
             n = int(cfg["page_turns"])
-            if n <= 0:
+            if n <= 0 or key in self._busy:
                 return
-            if umo in self._busy:
-                return
-            async with self._lock(umo):
-                rec = self.store.umo(umo)
+            async with self._lock(key):
+                rec = self.store.umo(key)
                 turns = int(rec["hour"].get("turns_in_file") or 0)
-                seq = int(rec["hour"].get("seq") or 0)
-            if turns < n or seq <= 0:
+            if turns < n:
                 return
-            self._busy.add(umo)
+            self._busy.add(key)
             try:
-                await self._close_and_consolidate(umo, seq)
+                await self._consolidate_page(key)
             finally:
-                self._busy.discard(umo)
+                self._busy.discard(key)
         except Exception as e:
             logger.error(f"mem4: 后台整理失败 {e}")
-            self._busy.discard(umo)
-
-    async def _close_and_consolidate(self, umo: str, seq: int) -> bool:
-        """把满掉的分片关掉 → 新开一个 → 用刚关的这个整理页。"""
-        cfg = self._cfg()
-        node = _seg_read(umo, seq) or {}
-        if not node.get("turns"):
-            logger.info(f"mem4: seg-{seq:04d} 里没有内容，不轮换")
-            return False
-        node["closed_at"] = time.time()
-        _seg_write(umo, seq, node)
-
-        async with self._lock(umo):
-            rec = self.store.umo(umo)
-            nextseq = seq + 1
-            rec["hour"]["seq"] = nextseq
-            rec["hour"]["file"] = f"seg-{nextseq:04d}.json"
-            rec["hour"]["turns_in_file"] = 0
-            _seg_write(umo, nextseq, {"seq": nextseq, "umo": umo, "opened_at": time.time(), "turns": []})
-            _seg_prune(umo, int(cfg.get("archive_keep", 10)))
-            await self.store.save()
-
-        ok = await self._consolidate_page(umo, seq)
-        if ok:
-            rec = self.store.umo(umo)
-            rec["hour"]["pages_done"] = int(rec["hour"].get("pages_done") or 0) + 1
-            await self.store.save()
-            await self._maybe_book(umo)
-        return ok
+            self._busy.discard(key)
 
     def _quota(self, cfg: dict, tier: str) -> dict:
         q = (cfg.get("importance_quota") or {}).get(tier)
@@ -819,13 +876,13 @@ class MemV4(Star):
         return int((cfg.get("min_importance") or {}).get(tier, 1))
 
     # ---------------- 页整理 ----------------
-    async def _consolidate_page(self, umo: str, seq: int) -> bool:
+    async def _consolidate_page(self, key: str) -> bool:
         cfg = self._cfg()
-        turns = _seg_turns(umo, seq)
+        turns = _turns_list(key)
         if not turns:
             return False
         raw = _turns_to_text(turns)
-        rec = self.store.umo(umo)
+        rec = self.store.umo(key)
         page = _ensure_page(rec, "hour")
         prev = _frozen_page(rec, "hour")
         prev_txt = _render_items(prev.get("items", [])) if prev else ""
@@ -834,10 +891,10 @@ class MemV4(Star):
             + (f"【上一页（已冻结，只读参考，不要改动它）】\n{prev_txt}\n\n" if prev_txt else "")
             + f"【素材：这 {len(turns)} 轮原话】\n{raw}"
         )
-        text = await self._llm(umo, "hour", prompt, _day_label(turns[-1].get("ts")))
+        text = await self._llm(key, "hour", prompt, _day_label(turns[-1].get("ts")))
         items = self._parse_items(text)
         if items is None:
-            logger.error("mem4: 页整理返回无法解析，保持原页")
+            logger.error("mem4: 页整理返回无法解析，待整理对话先留着")
             return False
         page["items"] = self._norm(
             items, int(cfg["max_items"].get("hour", 25)), self._quota(cfg, "hour")
@@ -845,8 +902,12 @@ class MemV4(Star):
         page["state"] = "mutable"
         page["sources"] = sorted({str(t.get("src") or "private") for t in turns})
         rec["hour"]["last_at"] = time.time()
-        await self.store.save()
-        logger.info(f"mem4: 页整理 seg-{seq:04d} → {len(page['items'])} 条（素材 {len(turns)} 轮 / {len(raw)} 字）")
+        rec["hour"]["pages_done"] = int(rec["hour"].get("pages_done") or 0) + 1
+        rec["hour"]["turns_in_file"] = 0
+        _turns_clear(key)          # 触发整理 → 待整理对话清空
+        await self.store.save(key)
+        logger.info(f"mem4: 页整理 {len(turns)} 轮 → {len(page['items'])} 条；待整理已清空")
+        await self._maybe_book(key)
         return True
 
     # ---------------- 本 / 棚 ----------------
@@ -938,7 +999,7 @@ class MemV4(Star):
 
     # ---------------- 空闲兜底 ----------------
     async def _idle_consolidate(self, umo: str) -> None:
-        """空闲兜底：攒了 ≥idle_min_turns 轮且已经静默够久，就提前关分片整理。"""
+        """空闲兜底：攒了 ≥idle_min_turns 轮且已经静默够久，就提前整理。"""
         try:
             if umo in self._busy:
                 return
@@ -947,15 +1008,14 @@ class MemV4(Star):
                 rec = self.store.umo(umo)
                 turns = int(rec["hour"].get("turns_in_file") or 0)
                 last = float(rec["hour"].get("last_turn_at") or 0)
-                seq = int(rec["hour"].get("seq") or 0)
-            if seq <= 0 or turns < int(cfg.get("idle_min_turns", 10)):
+            if turns < int(cfg.get("idle_min_turns", 10)):
                 return
             if time.time() - last < int(cfg.get("idle_seconds", 1800)):
                 return
             self._busy.add(umo)
             try:
                 logger.info(f"mem4: 空闲兜底触发（{turns} 轮没到 {cfg['page_turns']} 轮）")
-                await self._close_and_consolidate(umo, seq)
+                await self._consolidate_page(umo)
             finally:
                 self._busy.discard(umo)
         except Exception as e:
@@ -1066,23 +1126,21 @@ class MemV4(Star):
         turns = int(rec["hour"].get("turns_in_file") or 0)
         done_h = int(rec["hour"].get("pages_done") or 0)
         done_d = int(rec["day"].get("books_done") or 0)
-        seqs = _seg_list(umo)
-        cur = _seg_turns(umo, int(rec["hour"].get("seq") or 0)) if seqs else []
+        cur = _turns_list(umo)
         src_priv = sum(1 for t in cur if str(t.get("src") or "private") == "private")
         src_grp = len(cur) - src_priv
         lines = [
             "🧠 记忆（常开）",
             "────────────────────────",
             f"{_pad('页', 4)}{len(hp.get('items', []))} / {cap_h} 条"
-            f"   本页 {turns} / {n if n else '∞'} 轮",
+            f"   待整理 {turns} / {n if n else '∞'} 轮",
             f"{_pad('本', 4)}{len(dp.get('items', []))} / {cap_d} 条"
             f"   {done_h} / {int(cfg.get('book_pages', 5))} 页 → 换本",
             f"{_pad('棚', 4)}{len(rec['profile']['items'])} / {cap_p} 条"
             f"   {done_d} / {int(cfg.get('profile_books', 5))} 本 → 整理",
             "────────────────────────",
-            f"分片 {len(seqs)} 个（留 {int(cfg.get('archive_keep', 10))} 个）"
-            f"｜当前 seg-{int(rec['hour'].get('seq') or 0):04d}.json",
-            f"键 {umo}｜本次分片来源 私聊 {src_priv} 轮 / 群 {src_grp} 轮",
+            f"存 {str(umo).replace('person:', '')}.json"
+            f"｜来源 私聊 {src_priv} 轮 / 群 {src_grp} 轮",
         ]
         if n == 0:
             lines.append("（page 0 = 不自动分页，只在 /mem gen 时整理）")
@@ -1136,31 +1194,19 @@ class MemV4(Star):
             return
 
         if arg.startswith("gen"):
-            rec = self.store.umo(umo)
-            seq = int(rec["hour"].get("seq") or 0)
-            cur_turns = _seg_turns(umo, seq) if seq else []
-            if cur_turns:
-                ok = await self._close_and_consolidate(umo, seq)
-                used = len(cur_turns)
-                where = f"当前分片 seg-{seq:04d}"
-            else:
-                filled = [s for s in _seg_list(umo) if len(_seg_turns(umo, s)) > 0]
-                if not filled:
-                    yield event.plain_result("还没有可整理的分片（先聊几句）")
-                    return
-                last = filled[-1]
-                async with self._lock(umo):
-                    ok = await self._consolidate_page(umo, last)
-                used = len(_seg_turns(umo, last))
-                where = f"最近一个有内容的分片 seg-{last:04d}"
+            turns = _turns_list(umo)
+            if not turns:
+                yield event.plain_result("还没有待整理的对话（先聊几句）")
+                return
+            ok = await self._consolidate_page(umo)
             if not ok:
-                yield event.plain_result("这次整理没成功（多半是模型没按 JSON 格式返回），分片还在，可以再试一次")
+                yield event.plain_result("这次整理没成功（模型没按 JSON 格式返回），对话还留着，可以再试一次")
                 return
             rec = self.store.umo(umo)
             hp = _current_page(rec, "hour") or {}
             dp = _current_page(rec, "day") or {}
             yield event.plain_result(
-                f"✅ 已用{where}整理一次（{used} 轮）\n"
+                f"✅ 已用 {len(turns)} 轮对话整理一次（已清空）\n"
                 f"页 {len(hp.get('items', []))} 条 · 本 {len(dp.get('items', []))} 条"
             )
             return
