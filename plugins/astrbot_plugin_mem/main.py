@@ -367,8 +367,20 @@ class MemV4(Star):
         self._idle_task = None
         try:
             self._idle_task = asyncio.create_task(self._idle_loop())
+            asyncio.create_task(self._startup_catchup())
         except Exception:
             self._idle_task = None
+
+    async def _startup_catchup(self) -> None:
+        """启动自检：如果某个分片已经超过 page_turns（比如上次进程被杀），补一次整理。"""
+        await asyncio.sleep(20)
+        try:
+            if not self._enabled():
+                return
+            for umo in self.store.all_umos():
+                await self._after_turn(umo)
+        except Exception as e:
+            logger.error(f"mem4: 启动补整理失败 {e}")
 
     # ---------------- 配置 ----------------
     def _load_memo(self) -> str:
@@ -543,9 +555,6 @@ class MemV4(Star):
             if not user_text or not reply:
                 return
             await self._append_turn(umo, user_text[:300], reply[:300])
-            if umo in self._busy:
-                return
-            self._busy.add(umo)
             asyncio.create_task(self._after_turn(umo))
         except Exception as e:
             logger.error(f"mem4: 收集失败 {e}")
@@ -569,26 +578,36 @@ class MemV4(Star):
             await self.store.save()
 
     async def _after_turn(self, umo: str) -> None:
+        """每轮结束都看一下：当前分片是否写满。"""
         try:
             cfg = self._cfg()
             n = int(cfg["page_turns"])
             if n <= 0:
                 return
+            if umo in self._busy:
+                return
             async with self._lock(umo):
                 rec = self.store.umo(umo)
-                if int(rec["hour"].get("turns_in_file") or 0) < n:
-                    return
+                turns = int(rec["hour"].get("turns_in_file") or 0)
                 seq = int(rec["hour"].get("seq") or 0)
-            await self._close_and_consolidate(umo, seq)
+            if turns < n or seq <= 0:
+                return
+            self._busy.add(umo)
+            try:
+                await self._close_and_consolidate(umo, seq)
+            finally:
+                self._busy.discard(umo)
         except Exception as e:
             logger.error(f"mem4: 后台整理失败 {e}")
-        finally:
             self._busy.discard(umo)
 
     async def _close_and_consolidate(self, umo: str, seq: int) -> bool:
         """把满掉的分片关掉 → 新开一个 → 用刚关的这个整理页。"""
         cfg = self._cfg()
         node = _seg_read(umo, seq) or {}
+        if not node.get("turns"):
+            logger.info(f"mem4: seg-{seq:04d} 里没有内容，不轮换")
+            return False
         node["closed_at"] = time.time()
         _seg_write(umo, seq, node)
 
@@ -719,26 +738,41 @@ class MemV4(Star):
         return True
 
     # ---------------- 空闲兜底 ----------------
+    async def _idle_consolidate(self, umo: str) -> None:
+        """空闲兜底：攒了 ≥idle_min_turns 轮且已经静默够久，就提前关分片整理。"""
+        try:
+            if umo in self._busy:
+                return
+            cfg = self._cfg()
+            async with self._lock(umo):
+                rec = self.store.umo(umo)
+                turns = int(rec["hour"].get("turns_in_file") or 0)
+                last = float(rec["hour"].get("last_turn_at") or 0)
+                seq = int(rec["hour"].get("seq") or 0)
+            if seq <= 0 or turns < int(cfg.get("idle_min_turns", 10)):
+                return
+            if time.time() - last < int(cfg.get("idle_seconds", 1800)):
+                return
+            self._busy.add(umo)
+            try:
+                logger.info(f"mem4: 空闲兜底触发（{turns} 轮没到 {cfg['page_turns']} 轮）")
+                await self._close_and_consolidate(umo, seq)
+            finally:
+                self._busy.discard(umo)
+        except Exception as e:
+            logger.error(f"mem4: 空闲兜底失败 {e}")
+            self._busy.discard(umo)
+
     async def _idle_loop(self) -> None:
         await asyncio.sleep(30)
         while True:
             try:
                 cfg = self._cfg()
                 if self._enabled() and int(cfg.get("page_turns", 40)) > 0:
-                    now = time.time()
                     for umo in self.store.all_umos():
-                        rec = self.store.umo(umo)
-                        turns = int(rec["hour"].get("turns_in_file") or 0)
-                        last = float(rec["hour"].get("last_turn_at") or 0)
-                        if turns <= 0 or last <= 0:
-                            continue
-                        if turns >= int(cfg.get("idle_min_turns", 10)) and now - last >= int(cfg.get("idle_seconds", 1800)):
-                            if umo in self._busy:
-                                continue
-                            self._busy.add(umo)
-                            asyncio.create_task(self._close_and_consolidate(umo, int(rec["hour"].get("seq") or 1)))
+                        await self._idle_consolidate(umo)
             except Exception as e:
-                logger.error(f"mem4: 空闲兜底失败 {e}")
+                logger.error(f"mem4: 空闲检查失败 {e}")
             await asyncio.sleep(60)
 
     # ---------------- 注入 ----------------
