@@ -46,6 +46,12 @@ DEFAULT_CFG = {
     "idle_min_turns": 10,     # 且攒了这么多轮 → 提前整理
     "keep_pages": 2,          # 页/本各留 2 格（当前 + 冻结）
     "profile_cap": 40,
+    # 记忆按「人」存：私聊和群里的记录合并到同一个人名下
+    "unify_private_and_group": True,
+    # 群里只记录这些人说的话（其他人的话不进记忆，也不注入）
+    "group_memory_ids": ["3447899870"],
+    # 群聊注入级别：all=页+本+棚 / profile=只注入棚 / off=不注入
+    "group_inject_level": "all",
     "max_items": {"hour": 25, "day": 15, "profile": 10},
     # importance 名额：None=不限，数字=该档最多几条；没列出的档位只当补位
     "importance_quota": {
@@ -171,6 +177,21 @@ def _clean_items(items: list) -> list:
     return out
 
 
+def _umo_person(umo: str) -> str | None:
+    """从 umo 里取出对方 QQ：qq-snowluma:FriendMessage:3447899870 → 3447899870。群聊返回 None。"""
+    if "FriendMessage" in umo or "Friend" in umo:
+        parts = umo.split(":")
+        if parts:
+            tail = parts[-1].strip()
+            if tail.isdigit():
+                return tail
+    return None
+
+
+def _person_key(qq: str) -> str:
+    return f"person:{qq}"
+
+
 class _Mem:
     """三层记忆 + 分片指针，全部存在一个 json 里。"""
 
@@ -211,6 +232,37 @@ class _Mem:
         rec["profile"]["items"] = _clean_items(rec["profile"]["items"])
         return rec
 
+    @staticmethod
+    def _migrate_keys(d: dict) -> None:
+        """旧键（会话 umo）→ 新键（person:<QQ>），并把归档目录一起改名。"""
+        umos = d.get("umos") or {}
+        for u in list(umos.keys()):
+            if "FriendMessage" not in u and "Friend" not in u:
+                continue
+            qq = _umo_person(u)
+            if not qq:
+                continue
+            new = _person_key(qq)
+            old_rec = umos[u]
+            if new in umos:
+                tgt = umos[new]
+                for tier in ("hour", "day"):
+                    old_pages = (old_rec.get(tier) or {}).get("pages") or []
+                    if old_pages and not (tgt.get(tier) or {}).get("pages"):
+                        tgt[tier]["pages"] = old_pages[-2:]
+                if not (tgt.get("profile") or {}).get("items"):
+                    tgt["profile"]["items"] = (old_rec.get("profile") or {}).get("items") or []
+                umos.pop(u, None)
+            else:
+                umos[new] = umos.pop(u)
+            old_dir = os.path.join(_data_dir(), "mem_archive", hashlib.sha1(u.encode("utf-8")).hexdigest()[:12])
+            new_dir = _umo_dir(new)
+            if os.path.isdir(old_dir) and not os.path.isdir(new_dir):
+                try:
+                    os.rename(old_dir, new_dir)
+                except Exception as e:
+                    logger.error(f"mem4: 归档目录改名失败 {e}")
+
     def _load(self) -> dict:
         if self._data is not None:
             return self._data
@@ -222,6 +274,7 @@ class _Mem:
                     for u, rec in list(d["umos"].items()):
                         if isinstance(rec, dict):
                             d["umos"][u] = self._migrate(rec)
+                    self._migrate_keys(d)
                     self._data = d
                     return self._data
         except Exception as e:
@@ -616,19 +669,38 @@ class MemV4(Star):
                     break
         return [cleaned[i] for i in sorted(kept, key=lambda i: -cleaned[i]["importance"])]
 
+    # ---------------- 记忆键：按「人」而不是按「会话」 ----------------
+    def _key(self, event: AstrMessageEvent, cfg: dict | None = None) -> str | None:
+        cfg = cfg or self._cfg()
+        umo = str(event.unified_msg_origin)
+        try:
+            sid = str(event.get_sender_id() or "")
+        except Exception:
+            sid = ""
+        is_group = "GroupMessage" in umo or "Group" in umo
+        if is_group:
+            ids = [str(x) for x in (cfg.get("group_memory_ids") or [])]
+            return _person_key(sid) if sid in ids else None
+        if cfg.get("unify_private_and_group", True):
+            qq = sid or _umo_person(umo)
+            return _person_key(qq) if qq else umo
+        return umo
+
     # ---------------- 收集一轮 ----------------
     @filter.on_llm_response()
     async def collect(self, event: AstrMessageEvent, resp=None, *args, **kwargs):
         if not self._enabled():
             return
         try:
-            umo = str(event.unified_msg_origin)
+            key = self._key(event)
+            if not key:
+                return
             user_text = (event.message_str or "").strip()
             reply = (getattr(resp, "completion_text", "") or "").strip()
             if not user_text or not reply:
                 return
-            await self._append_turn(umo, user_text[:300], reply[:300])
-            asyncio.create_task(self._after_turn(umo))
+            await self._append_turn(key, user_text[:300], reply[:300])
+            asyncio.create_task(self._after_turn(key))
         except Exception as e:
             logger.error(f"mem4: 收集失败 {e}")
 
@@ -881,10 +953,15 @@ class MemV4(Star):
             "profile": self._top(rec["profile"]["items"], int(cfg["inject"]["profile_items"])),
         }
 
-    def _memory_block(self, rec: dict, cfg: dict) -> str:
+    def _memory_block(self, rec: dict, cfg: dict, only_profile: bool = False) -> str:
         v = self._visible(rec, cfg)
         parts = []
-        for key, label in (("hour", "最近一段"), ("day", "这几天"), ("profile", "长期")):
+        keys = (("profile", "长期"),) if only_profile else (
+            ("hour", "最近一段"),
+            ("day", "这几天"),
+            ("profile", "长期"),
+        )
+        for key, label in keys:
             items = v.get(key) or []
             if not items:
                 continue
@@ -907,7 +984,17 @@ class MemV4(Star):
         if req is None or not self._enabled():
             return
         try:
-            block = self._memory_block(self.store.umo(str(event.unified_msg_origin)), self._cfg())
+            cfg = self._cfg()
+            key = self._key(event, cfg)
+            if not key:
+                return
+            is_group = "GroupMessage" in str(event.unified_msg_origin) or "Group" in str(event.unified_msg_origin)
+            level = str(cfg.get("group_inject_level", "all")).lower()
+            if is_group and level == "off":
+                return
+            block = self._memory_block(
+                self.store.umo(key), cfg, only_profile=(is_group and level == "profile")
+            )
             if block:
                 req.system_prompt = (getattr(req, "system_prompt", "") or "") + block
         except Exception as e:
@@ -932,7 +1019,7 @@ class MemV4(Star):
 
     def _status(self, event: AstrMessageEvent, with_help: bool = True) -> str:
         cfg = self._cfg()
-        umo = str(event.unified_msg_origin)
+        umo = self._key(event, cfg) or str(event.unified_msg_origin)
         rec = self.store.umo(umo)
         hp = _current_page(rec, "hour") or {}
         dp = _current_page(rec, "day") or {}
@@ -979,7 +1066,7 @@ class MemV4(Star):
             return
         cfg = self._cfg()
         arg = self._arg(event).lower()
-        umo = str(event.unified_msg_origin)
+        umo = self._key(event, cfg) or str(event.unified_msg_origin)
 
         if not arg:
             yield event.plain_result(self._status(event))
