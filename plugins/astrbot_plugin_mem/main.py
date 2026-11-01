@@ -91,9 +91,10 @@ MEMO_SYSTEM = """你是「大肥鱼」。现在你要整理一下你和 TA 这�
 【怎么改这一页】
 - 这是我自己的一页本子，可以随时增、删、改，不是只许追加
 - 下面【素材】只是一段段原话，是给你参考的材料，不是要你复述
-- 输出必须是整页重写后的完整列表：没变的条目原样抄回并保留原 id，被推翻的改写，废话删掉
+- 输出必须是整页重写后的完整列表：没变的条目原样抄回，被推翻的改写，废话删掉
 - 同一个事实只留一条，不要换个说法写两遍
-- 总条数不超过 <<MAX_ITEMS>>；实在没东西可记就 {"items":[]}
+- **不要写 id、编号、序号**，只写 content / type / importance 三个字段
+- 按 importance 从 5 到 1 排好序；超过 <<MAX_ITEMS>> 条就丢 importance 最低的
 
 【不记】
 1 寒暄、语气词、表情、玩笑本身
@@ -102,7 +103,7 @@ MEMO_SYSTEM = """你是「大肥鱼」。现在你要整理一下你和 TA 这�
 4 我自己说过的话、我的语气、我的口头禅
 
 【输出】只输出 JSON，不要任何解释文字：
-{"items":[{"id":"原 id 或新 id","content":"第一人称一句话，≤40字","type":"who|like|deal|rel","importance":1-5}]}"""
+{"items":[{"content":"第一人称一句话，≤40字","type":"who|like|deal|rel","importance":1-5}]}"""
 
 
 def _pad(s: str, width: int) -> str:
@@ -125,6 +126,27 @@ def _data_dir() -> str:
 def _umo_dir(umo: str) -> str:
     h = hashlib.sha1(umo.encode("utf-8")).hexdigest()[:12]
     return os.path.join(_data_dir(), "mem_archive", h)
+
+
+def _clean_items(items: list) -> list:
+    """旧数据清洗：丢掉 id，按 importance 从高到低排。"""
+    out = []
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        c = str(it.get("content", "")).strip()
+        if not c:
+            continue
+        out.append(
+            {
+                "content": c[:60],
+                "type": str(it.get("type") or "talk"),
+                "importance": max(1, min(5, int(it.get("importance") or 3))),
+                "updated_at": it.get("updated_at") or time.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        )
+    out.sort(key=lambda x: -int(x["importance"]))
+    return out
 
 
 class _Mem:
@@ -159,8 +181,12 @@ class _Mem:
         for tier in ("hour", "day"):
             if not isinstance(rec[tier].get("pages"), list):
                 rec[tier]["pages"] = []
+            for page in rec[tier]["pages"]:
+                if isinstance(page, dict) and isinstance(page.get("items"), list):
+                    page["items"] = _clean_items(page["items"])
         if not isinstance(rec["profile"].get("items"), list):
             rec["profile"]["items"] = []
+        rec["profile"]["items"] = _clean_items(rec["profile"]["items"])
         return rec
 
     def _load(self) -> dict:
@@ -307,7 +333,6 @@ def _render_items(items: list) -> str:
     return json.dumps(
         [
             {
-                "id": i.get("id"),
                 "content": i.get("content"),
                 "type": i.get("type"),
                 "importance": i.get("importance"),
@@ -518,6 +543,7 @@ class MemV4(Star):
 
     @staticmethod
     def _norm(items: list, cap: int) -> list:
+        """去重 + 按 importance 从高到低排，超上限先丢低价值的。"""
         out, seen = [], set()
         now = time.strftime("%Y-%m-%d %H:%M:%S")
         for it in items:
@@ -532,16 +558,14 @@ class MemV4(Star):
             seen.add(key)
             out.append(
                 {
-                    "id": str(it.get("id") or f"m-{int(time.time()*1000)}-{len(out)}"),
                     "content": c[:60],
                     "type": str(it.get("type") or "talk"),
                     "importance": max(1, min(5, int(it.get("importance") or 3))),
                     "updated_at": now,
                 }
             )
-            if len(out) >= cap:
-                break
-        return out
+        out.sort(key=lambda x: -int(x.get("importance", 3)))
+        return out[:cap]
 
     # ---------------- 收集一轮 ----------------
     @filter.on_llm_response()
@@ -776,13 +800,18 @@ class MemV4(Star):
             await asyncio.sleep(60)
 
     # ---------------- 注入 ----------------
+    def _top(self, items: list, n: int) -> list:
+        """按 importance 从高到低取前 n 条。"""
+        ordered = sorted(items, key=lambda i: -int(i.get("importance") or 3))
+        return ordered[: max(0, n)]
+
     def _visible(self, rec: dict, cfg: dict) -> dict:
         hp = _current_page(rec, "hour")
         dp = _current_page(rec, "day")
         return {
-            "hour": list((hp or {}).get("items", []))[-int(cfg["inject"]["hour_items"]):],
-            "day": list((dp or {}).get("items", []))[-int(cfg["inject"]["day_items"]):],
-            "profile": rec["profile"]["items"][-int(cfg["inject"]["profile_items"]):],
+            "hour": self._top((hp or {}).get("items", []), int(cfg["inject"]["hour_items"])),
+            "day": self._top((dp or {}).get("items", []), int(cfg["inject"]["day_items"])),
+            "profile": self._top(rec["profile"]["items"], int(cfg["inject"]["profile_items"])),
         }
 
     def _memory_block(self, rec: dict, cfg: dict) -> str:

@@ -28,6 +28,16 @@ memory_store_v4.json   ← 页/本/棚 + 分片指针
 - 上限：页 20 条、本 12 条、棚 8 条（都是"上限"不是目标）
 - 注入只带当前页/当前本/棚；冻结的只做整理参考
 
+## 条目格式
+
+```json
+{"content":"第一人称一句话，≤40字","type":"who|like|deal|rel","importance":1-5}
+```
+
+- **没有 id**：批次编号在重写页面时会被模型乱编（见过的 h1…/n1… 就是模型自己起的），所以不存 id，靠内容前 20 字去重
+- **importance 决定顺序**：存储、注入、`/mem show` 一律按 importance 5→1 排序；超过上限时丢 importance 最低的
+- 注入时只带 importance 最高的前 N 条（`inject.hour_items`）
+
 ## 为什么 40 轮
 
 实测这轮对话 **≈167 tokens/轮**（60-70 字/轮），16k 减去固定系统开销（~3k）后：
