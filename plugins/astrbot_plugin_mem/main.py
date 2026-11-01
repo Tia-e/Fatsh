@@ -63,7 +63,7 @@ DEFAULT_CFG = {
     "min_importance": {"day": 3, "profile": 3},
     "inject": {
         "hour_items": 25, "day_items": 15, "profile_items": 10,
-        "hour_frozen_items": 10, "day_frozen_items": 6,
+        "hour_frozen_items": 10, "day_frozen_items": 10,
     },
 }
 
@@ -1051,7 +1051,7 @@ class MemV4(Star):
             "hour": self._top((hp or {}).get("items", []), int(inj.get("hour_items", 25))),
             "hour_frozen": self._top((hf or {}).get("items", []), int(inj.get("hour_frozen_items", 10))),
             "day": self._top((dp or {}).get("items", []), int(inj.get("day_items", 15))),
-            "day_frozen": self._top((df or {}).get("items", []), int(inj.get("day_frozen_items", 6))),
+            "day_frozen": self._top((df or {}).get("items", []), int(inj.get("day_frozen_items", 10))),
             "profile": self._top(rec["profile"]["items"], int(inj.get("profile_items", 10))),
         }
 

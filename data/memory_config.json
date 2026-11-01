@@ -8,20 +8,40 @@
   "keep_pages": 2,
   "profile_cap": 40,
   "unify_private_and_group": true,
-  "group_memory_ids": ["3447899870"],
+  "group_memory_ids": [
+    "3447899870"
+  ],
   "group_inject_level": "all",
-  "max_items": { "hour": 25, "day": 15, "profile": 10 },
-  "importance_quota": {
-    "hour": { "5": null, "4": 12, "3": 8 },
-    "day": { "5": null, "4": 8, "3": 6 },
-    "profile": { "5": null, "4": 8 }
+  "max_items": {
+    "hour": 25,
+    "day": 15,
+    "profile": 10
   },
-  "min_importance": { "day": 3, "profile": 3 },
+  "importance_quota": {
+    "hour": {
+      "5": null,
+      "4": 12,
+      "3": 8
+    },
+    "day": {
+      "5": null,
+      "4": 8,
+      "3": 6
+    },
+    "profile": {
+      "5": null,
+      "4": 8
+    }
+  },
+  "min_importance": {
+    "day": 3,
+    "profile": 3
+  },
   "inject": {
     "hour_items": 25,
     "hour_frozen_items": 10,
     "day_items": 15,
-    "day_frozen_items": 6,
+    "day_frozen_items": 10,
     "profile_items": 10
   }
 }
