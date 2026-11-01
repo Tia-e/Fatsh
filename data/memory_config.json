@@ -3,7 +3,6 @@
   "page_turns": 40,
   "book_pages": 5,
   "profile_books": 5,
-  "archive_keep": 10,
   "idle_seconds": 1800,
   "idle_min_turns": 10,
   "keep_pages": 2,
@@ -18,5 +17,11 @@
     "profile": { "5": null, "4": 8 }
   },
   "min_importance": { "day": 3, "profile": 3 },
-  "inject": { "hour_items": 25, "day_items": 15, "profile_items": 10 }
+  "inject": {
+    "hour_items": 25,
+    "hour_frozen_items": 10,
+    "day_items": 15,
+    "day_frozen_items": 6,
+    "profile_items": 10
+  }
 }

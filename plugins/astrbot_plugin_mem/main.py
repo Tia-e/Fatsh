@@ -61,7 +61,10 @@ DEFAULT_CFG = {
     },
     # 本/棚 只收 importance ≥ 这个值的条目
     "min_importance": {"day": 3, "profile": 3},
-    "inject": {"hour_items": 25, "day_items": 15, "profile_items": 10},
+    "inject": {
+        "hour_items": 25, "day_items": 15, "profile_items": 10,
+        "hour_frozen_items": 10, "day_frozen_items": 6,
+    },
 }
 
 TIER_CN = {"hour": "页（最近一段记忆）", "day": "本（这几天）", "profile": "棚（长期画像）"}
@@ -1040,11 +1043,16 @@ class MemV4(Star):
 
     def _visible(self, rec: dict, cfg: dict) -> dict:
         hp = _current_page(rec, "hour")
+        hf = _frozen_page(rec, "hour")
         dp = _current_page(rec, "day")
+        df = _frozen_page(rec, "day")
+        inj = cfg["inject"]
         return {
-            "hour": self._top((hp or {}).get("items", []), int(cfg["inject"]["hour_items"])),
-            "day": self._top((dp or {}).get("items", []), int(cfg["inject"]["day_items"])),
-            "profile": self._top(rec["profile"]["items"], int(cfg["inject"]["profile_items"])),
+            "hour": self._top((hp or {}).get("items", []), int(inj.get("hour_items", 25))),
+            "hour_frozen": self._top((hf or {}).get("items", []), int(inj.get("hour_frozen_items", 10))),
+            "day": self._top((dp or {}).get("items", []), int(inj.get("day_items", 15))),
+            "day_frozen": self._top((df or {}).get("items", []), int(inj.get("day_frozen_items", 6))),
+            "profile": self._top(rec["profile"]["items"], int(inj.get("profile_items", 10))),
         }
 
     def _memory_block(self, rec: dict, cfg: dict, only_profile: bool = False) -> str:
@@ -1052,7 +1060,9 @@ class MemV4(Star):
         parts = []
         keys = (("profile", "长期"),) if only_profile else (
             ("hour", "最近一段"),
+            ("hour_frozen", "上一段（已冻结）"),
             ("day", "这几天"),
+            ("day_frozen", "上几本（已冻结）"),
             ("profile", "长期"),
         )
         for key, label in keys:
@@ -1137,6 +1147,8 @@ class MemV4(Star):
             f"{_pad('棚', 4)}{len(rec['profile']['items'])} / {cap_p} 条"
             f"   {done_d} / {int(cfg.get('profile_books', 5))} 本 → 整理",
             "────────────────────────",
+            f"冻结 页 {len((_frozen_page(rec,'hour') or {}).get('items', []))} 条"
+            f" / 本 {len((_frozen_page(rec,'day') or {}).get('items', []))} 条（也注入）",
             f"存 {str(umo).replace('person:', '')}.json"
             f"｜来源 私聊 {src_priv} 轮 / 群 {src_grp} 轮",
         ]
@@ -1212,10 +1224,14 @@ class MemV4(Star):
         if arg == "show":
             v = self._visible(self.store.umo(umo), cfg)
             lines = ["🧠 现在会带进聊天的记忆", "────────────────────────"]
-            for k, label in (("hour", "页"), ("day", "本"), ("profile", "棚")):
-                lines.append(f"【{label}】{len(v[k])} 条")
-                lines += [f"  · {i.get('content')}" for i in v[k]] or ["  （空）"]
+            for k, label in (("hour", "页"), ("hour_frozen", "页·已冻结"),
+                             ("day", "本"), ("day_frozen", "本·已冻结"),
+                             ("profile", "棚")):
+                lines.append(f"【{label}】{len(v.get(k, []))} 条")
+                lines += [f"  · {i.get('content')}" for i in v.get(k, [])] or ["  （空）"]
                 lines.append("")
+            total = sum(len(v.get(k, [])) for k in v)
+            lines.append(f"合计 {total} 条（都会注入）")
             yield event.plain_result("\n".join(lines))
             return
 
