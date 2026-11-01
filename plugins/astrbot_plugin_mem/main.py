@@ -151,9 +151,21 @@ def _data_dir() -> str:
     return get_astrbot_data_path() if get_astrbot_data_path else "."
 
 
-def _umo_dir(umo: str) -> str:
-    h = hashlib.sha1(umo.encode("utf-8")).hexdigest()[:12]
-    return os.path.join(_data_dir(), "mem_archive", h)
+def _qq_of_key(key: str) -> str | None:
+    if key.startswith("person:"):
+        qq = key.split(":", 1)[1].strip()
+        return qq if qq.isdigit() else None
+    return None
+
+
+def _person_dir(key: str) -> str:
+    """data/mem_archive/<QQ>/ —— 一个人的所有东西都在这"""
+    qq = _qq_of_key(key) or "unknown"
+    return os.path.join(_data_dir(), "mem_archive", qq)
+
+
+def _mem_file(key: str) -> str:
+    return os.path.join(_person_dir(key), "memory.json")
 
 
 def _clean_items(items: list) -> list:
@@ -192,16 +204,100 @@ def _person_key(qq: str) -> str:
     return f"person:{qq}"
 
 
+# ---------------- 分片文件（每人一个目录） ----------------
+def _seg_path(key: str, seq: int) -> str:
+    return os.path.join(_person_dir(key), f"seg-{seq:04d}.json")
+
+
+def _seg_write(key: str, seq: int, data: dict) -> None:
+    d = _person_dir(key)
+    os.makedirs(d, exist_ok=True)
+    p = _seg_path(key, seq)
+    tmp = p + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, p)
+
+
+def _seg_read(key: str, seq: int) -> dict | None:
+    try:
+        with open(_seg_path(key, seq), "r", encoding="utf-8-sig") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _seg_list(key: str) -> list[int]:
+    d = _person_dir(key)
+    if not os.path.isdir(d):
+        return []
+    out = []
+    for name in os.listdir(d):
+        m = re.match(r"seg-(\d{4})\.json$", name)
+        if m:
+            out.append(int(m.group(1)))
+    return sorted(out)
+
+
+def _seg_prune(key: str, keep: int) -> list[int]:
+    seqs = _seg_list(key)
+    keep = max(2, int(keep))
+    if len(seqs) <= keep:
+        return []
+    drop = seqs[: len(seqs) - keep]
+    for s in drop:
+        try:
+            os.remove(_seg_path(key, s))
+        except Exception:
+            pass
+    return drop
+
+
+def _seg_turns(key: str, seq: int) -> list[dict]:
+    node = _seg_read(key, seq) or {}
+    turns = node.get("turns")
+    if not isinstance(turns, list):
+        return []
+    # 旧分片没有来源字段 → 默认按私聊
+    changed = False
+    for t in turns:
+        if isinstance(t, dict) and "src" not in t:
+            t["src"] = "private"
+            changed = True
+    if changed:
+        node["turns"] = turns
+        _seg_write(key, seq, node)
+    return turns
+
+
+def _turns_to_text(turns: list[dict]) -> str:
+    lines = []
+    for t in turns:
+        when = time.strftime("%m-%d %H:%M", time.localtime(t.get("ts", 0)))
+        src = "群" if str(t.get("src") or "").lower().startswith("group") else "私聊"
+        if t.get("user"):
+            lines.append(f"[{when}|{src}] 用户：{t['user']}")
+        if t.get("reply"):
+            lines.append(f"[{when}|{src}] 你：{t['reply']}")
+    return "\n".join(lines)
+
+
+def _render_items(items: list) -> str:
+    if not items:
+        return "[]"
+    return json.dumps(
+        [{"content": i.get("content"), "type": i.get("type"), "importance": i.get("importance")}
+         for i in items],
+        ensure_ascii=False,
+    )
+
+
 class _Mem:
-    """三层记忆 + 分片指针，全部存在一个 json 里。"""
+    """一个人的记忆一个文件：data/mem_archive/<QQ>/memory.json"""
 
     def __init__(self):
         self._lock = asyncio.Lock()
-        self._data: dict | None = None
-        self._path = os.path.join(_data_dir(), "memory_store_v4.json")
-
-    def ack_path(self) -> str:
-        return self._path
+        self._recs: dict | None = None
 
     @staticmethod
     def _blank_rec() -> dict:
@@ -232,190 +328,135 @@ class _Mem:
         rec["profile"]["items"] = _clean_items(rec["profile"]["items"])
         return rec
 
-    @staticmethod
-    def _migrate_keys(d: dict) -> None:
-        """旧键（会话 umo）→ 新键（person:<QQ>），并把归档目录一起改名。"""
-        umos = d.get("umos") or {}
-        for u in list(umos.keys()):
-            if "FriendMessage" not in u and "Friend" not in u:
-                continue
-            qq = _umo_person(u)
-            if not qq:
-                continue
-            new = _person_key(qq)
-            old_rec = umos[u]
-            if new in umos:
-                tgt = umos[new]
-                for tier in ("hour", "day"):
-                    old_pages = (old_rec.get(tier) or {}).get("pages") or []
-                    if old_pages and not (tgt.get(tier) or {}).get("pages"):
-                        tgt[tier]["pages"] = old_pages[-2:]
-                if not (tgt.get("profile") or {}).get("items"):
-                    tgt["profile"]["items"] = (old_rec.get("profile") or {}).get("items") or []
-                umos.pop(u, None)
+    # ---------- 读写 ----------
+    def _save_rec(self, key: str) -> None:
+        rec = (self._recs or {}).get(key)
+        if rec is None:
+            return
+        d = _person_dir(key)
+        os.makedirs(d, exist_ok=True)
+        p = _mem_file(key)
+        tmp = p + ".tmp"
+        payload = {
+            "key": key,
+            "qq": _qq_of_key(key),
+            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "rec": rec,
+        }
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=1)
+            os.replace(tmp, p)
+        except Exception as e:
+            logger.error(f"mem4: 写 {p} 失败 {e}")
+
+    async def save(self, key: str | None = None) -> None:
+        async with self._lock:
+            if key:
+                self._save_rec(key)
             else:
-                umos[new] = umos.pop(u)
-            old_dir = os.path.join(_data_dir(), "mem_archive", hashlib.sha1(u.encode("utf-8")).hexdigest()[:12])
-            new_dir = _umo_dir(new)
-            if os.path.isdir(old_dir) and not os.path.isdir(new_dir):
-                try:
-                    os.rename(old_dir, new_dir)
-                except Exception as e:
-                    logger.error(f"mem4: 归档目录改名失败 {e}")
+                for k in list((self._recs or {}).keys()):
+                    self._save_rec(k)
 
     def _load(self) -> dict:
-        if self._data is not None:
-            return self._data
-        try:
-            if os.path.exists(self._path):
-                with open(self._path, "r", encoding="utf-8-sig") as f:
+        if self._recs is not None:
+            return self._recs
+        self._recs = {}
+        base = os.path.join(_data_dir(), "mem_archive")
+        if os.path.isdir(base):
+            for name in os.listdir(base):
+                if not name.isdigit():
+                    continue
+                p = os.path.join(base, name, "memory.json")
+                try:
+                    if os.path.isfile(p):
+                        with open(p, "r", encoding="utf-8-sig") as f:
+                            d = json.load(f)
+                        rec = d.get("rec") if isinstance(d, dict) and isinstance(d.get("rec"), dict) else d
+                    else:
+                        rec = self._blank_rec()
+                except Exception as e:
+                    logger.error(f"mem4: 读 {name}/memory.json 失败 {e}")
+                    rec = self._blank_rec()
+                self._recs[f"person:{name}"] = self._migrate(rec)
+        self._migrate_legacy()
+        return self._recs
+
+    def _migrate_legacy(self) -> None:
+        """旧布局（单文件 store + 哈希分片目录）→ mem_archive/<QQ>/。"""
+        changed = False
+        # 1) 旧 store：键可能是会话 umo 或 person:QQ
+        for fname in ("memory_store_v4.json", "memory_store_v3.json"):
+            p = os.path.join(_data_dir(), fname)
+            if not os.path.isfile(p):
+                continue
+            try:
+                with open(p, "r", encoding="utf-8-sig") as f:
                     d = json.load(f)
-                if isinstance(d, dict) and isinstance(d.get("umos"), dict):
-                    for u, rec in list(d["umos"].items()):
-                        if isinstance(rec, dict):
-                            d["umos"][u] = self._migrate(rec)
-                    self._migrate_keys(d)
-                    self._data = d
-                    return self._data
-        except Exception as e:
-            logger.error(f"mem4: 读取记忆库失败 {e}")
-        self._data = {"umos": {}}
-        # 从 v3 迁移（旧的三页结构）
-        try:
-            v3 = os.path.join(_data_dir(), "memory_store_v3.json")
-            if os.path.exists(v3):
-                with open(v3, "r", encoding="utf-8-sig") as f:
-                    old = json.load(f)
-                umos = (old or {}).get("umos") or {}
-                for u, rec in umos.items():
-                    if not isinstance(rec, dict):
-                        continue
-                    new = self._blank_rec()
-                    for tier, key in (("hour", "hour"), ("day", "day")):
-                        pages = (rec.get(tier) or {}).get("pages") or []
-                        for p in pages[-2:]:
-                            if isinstance(p, dict) and p.get("items"):
-                                new[key]["pages"].append(
-                                    {
-                                        "items": p.get("items", []),
-                                        "opened_at": p.get("opened_at") or time.time(),
-                                        "frozen_at": p.get("frozen_at"),
-                                        "state": p.get("state") or "mutable",
-                                    }
-                                )
-                    prof = (rec.get("profile") or {}).get("items") or []
-                    new["profile"]["items"] = prof
-                    self._data["umos"][u] = new
-                if self._data["umos"]:
-                    logger.info(f"mem4: 已从 v3 迁移 {len(self._data['umos'])} 个会话的记忆")
-        except Exception as e:
-            logger.error(f"mem4: 从 v3 迁移失败 {e}")
-        return self._data
+            except Exception as e:
+                logger.error(f"mem4: 迁移 {fname} 失败 {e}")
+                continue
+            for key, rec in (d.get("umos") or {}).items():
+                qq = _qq_of_key(key) or _umo_person(key)
+                if not qq or not isinstance(rec, dict):
+                    continue
+                new = _person_key(qq)
+                if new in self._recs:
+                    continue
+                self._recs[new] = self._migrate(rec)
+                changed = True
+        # 2) 哈希名分片目录 → <QQ>/
+        base = os.path.join(_data_dir(), "mem_archive")
+        if os.path.isdir(base):
+            for name in os.listdir(base):
+                p = os.path.join(base, name)
+                if not os.path.isdir(p) or name.isdigit():
+                    continue
+                qq = None
+                for f in sorted(os.listdir(p)):
+                    if f.startswith("seg-") and f.endswith(".json"):
+                        try:
+                            with open(os.path.join(p, f), "r", encoding="utf-8-sig") as fh:
+                                meta = json.load(fh)
+                        except Exception:
+                            continue
+                        src = str(meta.get("key") or meta.get("umo") or "")
+                        qq = _qq_of_key(src) or _umo_person(src)
+                        if qq:
+                            break
+                if not qq:
+                    continue
+                target = os.path.join(base, qq)
+                os.makedirs(target, exist_ok=True)
+                for f in os.listdir(p):
+                    src_p = os.path.join(p, f)
+                    dst_p = os.path.join(target, f)
+                    if os.path.isfile(src_p) and not os.path.exists(dst_p):
+                        try:
+                            os.replace(src_p, dst_p)
+                            changed = True
+                        except Exception:
+                            pass
+                try:
+                    if not os.listdir(p):
+                        os.rmdir(p)
+                except Exception:
+                    pass
+        if changed:
+            for k in list(self._recs.keys()):
+                self._save_rec(k)
+            logger.info(f"mem4: 迁移完成，共 {len(self._recs)} 份记忆 → mem_archive/<QQ>/memory.json")
 
-    async def save(self) -> None:
-        async with self._lock:
-            data = self._load()
-            data["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-            os.makedirs(os.path.dirname(self._path), exist_ok=True)
-            tmp = self._path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=1)
-            os.replace(tmp, self._path)
-
-    def umo(self, umo: str) -> dict:
-        data = self._load()
-        rec = data["umos"].get(umo)
+    def umo(self, key: str) -> dict:
+        recs = self._load()
+        rec = recs.get(key)
         if not isinstance(rec, dict):
             rec = self._blank_rec()
-            data["umos"][umo] = rec
+            recs[key] = rec
         return self._migrate(rec)
 
     def all_umos(self) -> list[str]:
-        return list(self._load()["umos"].keys())
-
-
-# ---------------- 分片文件 ----------------
-def _seg_path(umo: str, seq: int) -> str:
-    return os.path.join(_umo_dir(umo), f"seg-{seq:04d}.json")
-
-
-def _seg_write(umo: str, seq: int, data: dict) -> None:
-    d = _umo_dir(umo)
-    os.makedirs(d, exist_ok=True)
-    p = _seg_path(umo, seq)
-    tmp = p + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=1)
-    os.replace(tmp, p)
-
-
-def _seg_read(umo: str, seq: int) -> dict | None:
-    try:
-        with open(_seg_path(umo, seq), "r", encoding="utf-8-sig") as f:
-            return json.load(f)
-    except Exception:
-        return None
-
-
-def _seg_list(umo: str) -> list[int]:
-    """按 seq 升序列出已有分片。"""
-    d = _umo_dir(umo)
-    if not os.path.isdir(d):
-        return []
-    out = []
-    for name in os.listdir(d):
-        m = re.match(r"seg-(\d{4})\.json$", name)
-        if m:
-            out.append(int(m.group(1)))
-    return sorted(out)
-
-
-def _seg_prune(umo: str, keep: int) -> list[int]:
-    """只留最新的 keep 个分片，返回被删掉的 seq。"""
-    seqs = _seg_list(umo)
-    keep = max(2, int(keep))
-    if len(seqs) <= keep:
-        return []
-    drop = seqs[: len(seqs) - keep]
-    for s in drop:
-        try:
-            os.remove(_seg_path(umo, s))
-        except Exception:
-            pass
-    return drop
-
-
-def _seg_turns(umo: str, seq: int) -> list[dict]:
-    d = _seg_read(umo, seq) or {}
-    turns = d.get("turns")
-    return turns if isinstance(turns, list) else []
-
-
-def _turns_to_text(turns: list[dict]) -> str:
-    lines = []
-    for t in turns:
-        when = time.strftime("%m-%d %H:%M", time.localtime(t.get("ts", 0)))
-        if t.get("user"):
-            lines.append(f"[{when}] 用户：{t['user']}")
-        if t.get("reply"):
-            lines.append(f"[{when}] 你：{t['reply']}")
-    return "\n".join(lines)
-
-
-def _render_items(items: list) -> str:
-    if not items:
-        return "[]"
-    return json.dumps(
-        [
-            {
-                "content": i.get("content"),
-                "type": i.get("type"),
-                "importance": i.get("importance"),
-            }
-            for i in items
-        ],
-        ensure_ascii=False,
-    )
+        return list(self._load().keys())
 
 
 def _current_page(rec: dict, tier: str) -> dict | None:
@@ -531,23 +572,9 @@ class MemV4(Star):
         except Exception as e:
             logger.error(f"mem4: 写配置失败 {e}")
 
-    def _state_path(self) -> str:
-        return os.path.join(_data_dir(), "mem_state.json")
-
     def _enabled(self) -> bool:
-        try:
-            with open(self._state_path(), "r", encoding="utf-8") as f:
-                return bool(json.load(f).get("enabled", True))
-        except Exception:
-            return bool(self._cfg().get("enabled", True))
-
-    def _set_enabled(self, on: bool) -> None:
-        try:
-            with open(self._state_path(), "w", encoding="utf-8") as f:
-                json.dump({"enabled": bool(on), "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")},
-                          f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.error(f"mem4: 写开关失败 {e}")
+        """用了这个插件就是常开，没有开关。"""
+        return True
 
     def _lock(self, umo: str) -> asyncio.Lock:
         lk = self._locks.get(umo)
@@ -699,28 +726,36 @@ class MemV4(Star):
             reply = (getattr(resp, "completion_text", "") or "").strip()
             if not user_text or not reply:
                 return
-            await self._append_turn(key, user_text[:300], reply[:300])
+            umo = str(event.unified_msg_origin)
+            src = "group" if ("GroupMessage" in umo or "Group" in umo) else "private"
+            await self._append_turn(key, user_text[:300], reply[:300], src)
             asyncio.create_task(self._after_turn(key))
         except Exception as e:
             logger.error(f"mem4: 收集失败 {e}")
 
-    async def _append_turn(self, umo: str, user: str, reply: str) -> None:
-        async with self._lock(umo):
+    async def _append_turn(self, key: str, user: str, reply: str, src: str = "private") -> None:
+        async with self._lock(key):
             cfg = self._cfg()
-            rec = self.store.umo(umo)
+            rec = self.store.umo(key)
             seq = int(rec["hour"].get("seq") or 0)
             if seq <= 0 or rec["hour"].get("file") != f"seg-{seq:04d}.json":
-                seq = max(_seg_list(umo) + [0]) + 1
+                seq = max(_seg_list(key) + [0]) + 1
                 rec["hour"]["seq"] = seq
                 rec["hour"]["file"] = f"seg-{seq:04d}.json"
-            node = _seg_read(umo, seq) or {"seq": seq, "umo": umo, "opened_at": time.time(), "turns": []}
+            node = _seg_read(key, seq) or {
+                "seq": seq,
+                "key": key,
+                "qq": _qq_of_key(key),
+                "opened_at": time.time(),
+                "turns": [],
+            }
             node.setdefault("turns", [])
-            node["turns"].append({"ts": time.time(), "user": user, "reply": reply})
+            node["turns"].append({"ts": time.time(), "user": user, "reply": reply, "src": src})
             node["closed_at"] = None
-            _seg_write(umo, seq, node)
+            _seg_write(key, seq, node)
             rec["hour"]["turns_in_file"] = len(node["turns"])
             rec["hour"]["last_turn_at"] = time.time()
-            await self.store.save()
+            await self.store.save(key)
 
     async def _after_turn(self, umo: str) -> None:
         """每轮结束都看一下：当前分片是否写满。"""
@@ -808,6 +843,7 @@ class MemV4(Star):
             items, int(cfg["max_items"].get("hour", 25)), self._quota(cfg, "hour")
         )
         page["state"] = "mutable"
+        page["sources"] = sorted({str(t.get("src") or "private") for t in turns})
         rec["hour"]["last_at"] = time.time()
         await self.store.save()
         logger.info(f"mem4: 页整理 seg-{seq:04d} → {len(page['items'])} 条（素材 {len(turns)} 轮 / {len(raw)} 字）")
@@ -1031,8 +1067,11 @@ class MemV4(Star):
         done_h = int(rec["hour"].get("pages_done") or 0)
         done_d = int(rec["day"].get("books_done") or 0)
         seqs = _seg_list(umo)
+        cur = _seg_turns(umo, int(rec["hour"].get("seq") or 0)) if seqs else []
+        src_priv = sum(1 for t in cur if str(t.get("src") or "private") == "private")
+        src_grp = len(cur) - src_priv
         lines = [
-            f"🧠 记忆 · {'已开启' if self._enabled() else '已关闭'}",
+            "🧠 记忆（常开）",
             "────────────────────────",
             f"{_pad('页', 4)}{len(hp.get('items', []))} / {cap_h} 条"
             f"   本页 {turns} / {n if n else '∞'} 轮",
@@ -1043,6 +1082,7 @@ class MemV4(Star):
             "────────────────────────",
             f"分片 {len(seqs)} 个（留 {int(cfg.get('archive_keep', 10))} 个）"
             f"｜当前 seg-{int(rec['hour'].get('seq') or 0):04d}.json",
+            f"键 {umo}｜本次分片来源 私聊 {src_priv} 轮 / 群 {src_grp} 轮",
         ]
         if n == 0:
             lines.append("（page 0 = 不自动分页，只在 /mem gen 时整理）")
@@ -1051,11 +1091,10 @@ class MemV4(Star):
         if with_help:
             lines += [
                 "────────────────────────",
-                "/mem on｜off       开关记忆",
                 "/mem show          看现在会带进去的记忆",
-                "/mem clear         清掉本会话的页/本/棚（分片不动）",
+                "/mem clear         清掉这个人的页/本/棚（分片不动）",
                 "/mem page 0-100    每页多少轮（默认 40）",
-                "/mem gen 0-10      拿最近 N 个分片整理（0=全部）",
+                "/mem gen           立刻用当前分片整理一次",
             ]
         return "\n".join(lines)
 
@@ -1073,9 +1112,7 @@ class MemV4(Star):
             return
 
         if arg in ("on", "off", "enable", "disable", "开", "关"):
-            on = arg in ("on", "enable", "开")
-            self._set_enabled(on)
-            yield event.plain_result(f"🧠 记忆已{'开启' if on else '关闭'}")
+            yield event.plain_result("记忆插件是常开的，没有开关。要清空就 /mem clear。")
             return
 
         if arg.startswith("page"):
@@ -1099,37 +1136,32 @@ class MemV4(Star):
             return
 
         if arg.startswith("gen"):
-            part = arg[3:].strip()
-            if not part:
-                yield event.plain_result("用法：/mem gen 0-10（N = 拿最近 N 个分片整理，0 = 全部）")
-                return
-            try:
-                n = int(part)
-            except ValueError:
-                yield event.plain_result("用法：/mem gen 0-10")
-                return
-            if n < 0 or n > 10:
-                yield event.plain_result("只能填 0-10")
-                return
-            seqs = _seg_list(umo)
-            if not seqs:
-                yield event.plain_result("还没有可整理的分片（先聊几句）")
-                return
-            take = seqs[-n:] if n > 0 else seqs
-            done = 0
-            for s in take:
+            rec = self.store.umo(umo)
+            seq = int(rec["hour"].get("seq") or 0)
+            cur_turns = _seg_turns(umo, seq) if seq else []
+            if cur_turns:
+                ok = await self._close_and_consolidate(umo, seq)
+                used = len(cur_turns)
+                where = f"当前分片 seg-{seq:04d}"
+            else:
+                filled = [s for s in _seg_list(umo) if len(_seg_turns(umo, s)) > 0]
+                if not filled:
+                    yield event.plain_result("还没有可整理的分片（先聊几句）")
+                    return
+                last = filled[-1]
                 async with self._lock(umo):
-                    ok = await self._consolidate_page(umo, s)
-                if ok:
-                    done += 1
-            if done == 0:
-                yield event.plain_result("这些分片没能整理成功（可能是模型没按格式返回）")
+                    ok = await self._consolidate_page(umo, last)
+                used = len(_seg_turns(umo, last))
+                where = f"最近一个有内容的分片 seg-{last:04d}"
+            if not ok:
+                yield event.plain_result("这次整理没成功（多半是模型没按 JSON 格式返回），分片还在，可以再试一次")
                 return
             rec = self.store.umo(umo)
             hp = _current_page(rec, "hour") or {}
+            dp = _current_page(rec, "day") or {}
             yield event.plain_result(
-                f"✅ 整理了 {done} / {len(take)} 个分片（共 {len(seqs)} 个）\n"
-                f"这一页现在 {len(hp.get('items', []))} 条"
+                f"✅ 已用{where}整理一次（{used} 轮）\n"
+                f"页 {len(hp.get('items', []))} 条 · 本 {len(dp.get('items', []))} 条"
             )
             return
 
