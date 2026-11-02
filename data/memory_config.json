@@ -1,6 +1,6 @@
 {
   "enabled": true,
-  "page_turns": 40,
+  "page_turns": 20,
   "book_pages": 5,
   "profile_books": 5,
   "idle_seconds": 1800,

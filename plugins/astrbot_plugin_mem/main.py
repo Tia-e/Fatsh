@@ -38,7 +38,7 @@ except Exception:  # pragma: no cover
 DEFAULT_CFG = {
     "enabled": True,
     # 每页多少轮（1 轮 = 1 问 1 答）；0 = 关掉自动分页，只在 /mem gen 时整理
-    "page_turns": 40,
+    "page_turns": 20,
     "book_pages": 5,          # 几次页整理 → 一次本整理
     "profile_books": 5,       # 几次本整理 → 一次棚整理
     "archive_keep": 10,       # 已废弃（现在每人只有一个 <QQ>.json）
