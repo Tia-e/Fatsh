@@ -20,10 +20,17 @@ from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 DELAY_CFG = os.path.join("config", "astrbot_plugin_human_delay_config.json")
 
-MAX_SEG_CHARS = 40      # 单段超过这个长度再按句读二次切
-SOFT_MAX_CHARS = 12     # 有空格的句子按这个长度软切（"啊 我长这样 蓝毛女仆" → 断成两三条）
-MAX_SEGMENTS = 6        # 一条回复最多拆几段
+MAX_SEG_CHARS = 40      # 聊天模式：单段超过这个长度再按句读二次切
+SOFT_MAX_CHARS = 12     # 聊天模式：有空格的句子按这个长度软切
+MAX_SEGMENTS = 6        # 聊天模式：一条回复最多拆几段
 MIN_SEG_CHARS = 3       # 太短的段并到上一段
+
+# 长文模式（讲事情、解释、方案这类，不要按聊天节奏切碎）
+LONG_CHARS = 120        # 去空白字数超过这个 → 长文
+LONG_AVG_LINE = 30      # 平均每行字数超过这个 → 长文
+LONG_MAX_SEG = 150      # 长文单段上限
+LONG_MIN_SEG = 40       # 长文最小段，太小就并到前一段
+LONG_MAX_SEGMENTS = 4   # 长文最多几段
 
 
 @register(
@@ -91,14 +98,85 @@ class HumanDelay(Star):
         return max(0.0, min(max(floor, base + seg_len * self._per_char()), cap))
 
     # ---------- 切分 ----------
+    @staticmethod
+    def _structured(text: str) -> bool:
+        """代码块 / 列表 / 引用 / 表格 → 整条发，不切。"""
+        if "```" in text:
+            return True
+        for line in text.splitlines():
+            s = line.strip()
+            if not s:
+                continue
+            if s.startswith(("- ", "* ", "> ", "|")) or re.match(r"^\d+[.、)]\s+", s):
+                return True
+        return "|" in text and text.count("|") >= 3
+
+    def _mode_of(self, text: str, lines: list[str]) -> str:
+        no_ws = re.sub(r"\s", "", text)
+        if len(no_ws) <= 10:
+            return "single"
+        avg = len(no_ws) / max(1, len(lines))
+        if len(no_ws) > LONG_CHARS or avg > LONG_AVG_LINE:
+            return "long"
+        return "chat"
+
+    def _split_long(self, text: str) -> list[str]:
+        """长文：按段落/句子切，单段 ≤150 字，最多 4 段，不按空格切。"""
+        paras = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
+        if len(paras) <= 1:
+            paras = [p.strip() for p in re.split(r"[\r\n]+", text) if p.strip()]
+        segs: list[str] = []
+        for para in paras:
+            if len(para) <= LONG_MAX_SEG:
+                segs.append(para)
+                continue
+            pieces = [p.strip() for p in re.split(r"(?<=[。！？!?])", para) if p.strip()]
+            buf = ""
+            for piece in pieces:
+                while len(piece) > LONG_MAX_SEG:
+                    # 单句超长：优先在逗号处断开
+                    cut = max(piece.rfind("，", 0, LONG_MAX_SEG), piece.rfind(",", 0, LONG_MAX_SEG))
+                    cut = cut if cut > 20 else LONG_MAX_SEG
+                    segs.append(piece[:cut].strip())
+                    piece = piece[cut:].strip()
+                cand = f"{buf}{piece}"
+                if buf and len(cand) > LONG_MAX_SEG:
+                    segs.append(buf)
+                    buf = piece
+                else:
+                    buf = cand
+            if buf:
+                segs.append(buf)
+        merged: list[str] = []
+        for seg in segs:
+            if merged and len(merged[-1]) < LONG_MIN_SEG and len(merged[-1]) + len(seg) <= LONG_MAX_SEG:
+                merged[-1] = merged[-1] + "\n" + seg
+            else:
+                merged.append(seg)
+        if len(merged) > LONG_MAX_SEGMENTS:
+            head = merged[: LONG_MAX_SEGMENTS - 1]
+            head.append("\n".join(merged[LONG_MAX_SEGMENTS - 1:]))
+            return head
+        return merged
+
     def split_segments(self, text: str) -> list[str]:
+        text = (text or "").strip()
+        if not text:
+            return []
+        if self._structured(text):
+            return [text]
         lines = [s.strip() for s in re.split(r"[\r\n]+", text) if s.strip()]
+        mode = self._mode_of(text, lines)
+        if mode == "single":
+            return [text.replace("\n", " ")]
+        if mode == "long":
+            return self._split_long(text)
+
+        # 聊天模式：短句、碎、多口气
         parts: list[str] = []
         for line in lines:
-            # 1) 有句读的先按句读切
             pieces = [p.strip() for p in re.split(r"(?<=[，。！？；~…])", line) if p.strip()]
             for piece in pieces or [line]:
-                # 2) 有空格的长句：按空格做"软切"，每段不超过 SOFT_MAX_CHARS
                 words = piece.split()
                 if len(words) > 1:
                     buf = ""
@@ -112,7 +190,6 @@ class HumanDelay(Star):
                     if buf:
                         parts.append(buf)
                 elif len(piece) > MAX_SEG_CHARS:
-                    # 3) 没空格又超长：硬切
                     parts.extend(
                         piece[i : i + MAX_SEG_CHARS] for i in range(0, len(piece), MAX_SEG_CHARS)
                     )
@@ -124,7 +201,10 @@ class HumanDelay(Star):
                 merged[-1] = merged[-1] + seg
             else:
                 merged.append(seg)
-        return merged[:MAX_SEGMENTS]
+        out = merged[:MAX_SEGMENTS]
+        if len(merged) > MAX_SEGMENTS:
+            out[-1] = " ".join(merged[MAX_SEGMENTS - 1:])
+        return out
 
     # ---------- 钩子 ----------
     @filter.on_decorating_result(priority=-100)
@@ -164,9 +244,13 @@ class HumanDelay(Star):
         first = segs[0]
         res.chain = [Plain(text=first)]
         delay = self.compute_delay(len(first))
+        no_ws = re.sub(r"\s", "", text)
+        mode = "整条" if len(segs) == 1 else (
+            "长文" if no_ws and len(no_ws) > LONG_CHARS else "聊天"
+        )
         logger.info(
-            f"human_delay: 拆成 {len(segs)} 段，首条 {len(first)} 字等 {delay:.2f}s，"
-            f"后续间隔 ≥{self._floor():.1f}s"
+            f"human_delay: {mode}模式，{no_ws and len(no_ws) or 0} 字拆成 {len(segs)} 段，"
+            f"首条 {len(first)} 字等 {delay:.2f}s，后续间隔 ≥{self._floor():.1f}s"
         )
         if delay > 0.05:
             await asyncio.sleep(delay)
