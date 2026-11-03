@@ -46,12 +46,8 @@ DEFAULT_CFG = {
     "idle_min_turns": 10,     # 且攒了这么多轮 → 提前整理
     "keep_pages": 2,          # 页/本各留 2 格（当前 + 冻结）
     "profile_cap": 40,
-    # 记忆按「人」存：私聊和群里的记录合并到同一个人名下
-    "unify_private_and_group": True,
-    # 群里只记录这些人说的话（其他人的话不进记忆，也不注入）
-    "group_memory_ids": ["3447899870"],
-    # 群聊注入级别：all=页+本+棚 / profile=只注入棚 / off=不注入
-    "group_inject_level": "all",
+    # 记忆只在私聊：群里不记录、不注入
+    "private_only": True,
     "max_items": {"hour": 25, "day": 15, "profile": 10},
     # importance 名额：None=不限，数字=该档最多几条；没列出的档位只当补位
     "importance_quota": {
@@ -797,22 +793,18 @@ class MemV4(Star):
                     break
         return [cleaned[i] for i in sorted(kept, key=lambda i: -cleaned[i]["importance"])]
 
-    # ---------------- 记忆键：按「人」而不是按「会话」 ----------------
+    # ---------------- 记忆键：只服务私聊 ----------------
     def _key(self, event: AstrMessageEvent, cfg: dict | None = None) -> str | None:
         cfg = cfg or self._cfg()
         umo = str(event.unified_msg_origin)
+        if "Group" in umo:
+            return None                      # 群聊完全不参与记忆
         try:
             sid = str(event.get_sender_id() or "")
         except Exception:
             sid = ""
-        is_group = "GroupMessage" in umo or "Group" in umo
-        if is_group:
-            ids = [str(x) for x in (cfg.get("group_memory_ids") or [])]
-            return _person_key(sid) if sid in ids else None
-        if cfg.get("unify_private_and_group", True):
-            qq = sid or _umo_person(umo)
-            return _person_key(qq) if qq else umo
-        return umo
+        qq = sid or _umo_person(umo)
+        return _person_key(qq) if qq else None
 
     # ---------------- 收集一轮 ----------------
     @filter.on_llm_response()
@@ -1092,13 +1084,7 @@ class MemV4(Star):
             key = self._key(event, cfg)
             if not key:
                 return
-            is_group = "GroupMessage" in str(event.unified_msg_origin) or "Group" in str(event.unified_msg_origin)
-            level = str(cfg.get("group_inject_level", "all")).lower()
-            if is_group and level == "off":
-                return
-            block = self._memory_block(
-                self.store.umo(key), cfg, only_profile=(is_group and level == "profile")
-            )
+            block = self._memory_block(self.store.umo(key), cfg)
             if block:
                 req.system_prompt = (getattr(req, "system_prompt", "") or "") + block
         except Exception as e:

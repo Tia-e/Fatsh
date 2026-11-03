@@ -7,11 +7,6 @@
   "idle_min_turns": 10,
   "keep_pages": 2,
   "profile_cap": 40,
-  "unify_private_and_group": true,
-  "group_memory_ids": [
-    "3447899870"
-  ],
-  "group_inject_level": "all",
   "max_items": {
     "hour": 25,
     "day": 15,
@@ -43,5 +38,6 @@
     "day_items": 15,
     "day_frozen_items": 10,
     "profile_items": 10
-  }
+  },
+  "private_only": true
 }
