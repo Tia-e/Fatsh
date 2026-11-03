@@ -1,6 +1,0 @@
-name: astrbot_plugin_cmd_help
-display_name: 指令表 + 闸门
-desc: /cmd 中文指令表；同时承担指令静默闸门——非白名单发送者发 "/" 开头消息直接丢弃，不回复不执行。
-version: v2.0.0
-author: hermes
-repo: ""

@@ -249,7 +249,12 @@ class ModeSwitch(Star):
             persona = (custom or base or "").strip()
 
             parts = [self._rules.strip()]
-            parts.append(self._scene_block(event))
+            scene = None
+            try:
+                scene = event.get_extra("scene_block")
+            except Exception:
+                scene = None
+            parts.append(scene or self._scene_block(event))
             if persona:
                 parts.append(persona)
             if rest:

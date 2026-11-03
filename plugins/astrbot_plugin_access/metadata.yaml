@@ -1,0 +1,6 @@
+name: astrbot_plugin_access
+display_name: 访问控制
+desc: 指令过滤（只有主人的 / 指令放行，其他人的 / 完全静默）+ agent 工具闸门 + 会话身份提示（私聊/群聊、对方是不是主人）。明文白名单，不做哈希，不注册任何用户命令。
+version: v1.0.0
+author: hermes
+repo: ""
