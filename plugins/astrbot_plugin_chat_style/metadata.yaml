@@ -1,0 +1,6 @@
+name: astrbot_plugin_chat_style
+display_name: 发送节奏
+desc: 一条发送链：文本清洗（去掉句号、独白、跨轮重复）→ 分段（聊天/长文/结构化三档）→ 拟人延迟。命令 /style 调节奏与分段。
+version: v1.0.0
+author: hermes
+repo: ""

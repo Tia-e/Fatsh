@@ -46,8 +46,7 @@ DEFAULT_CFG = {
     "idle_min_turns": 10,     # 且攒了这么多轮 → 提前整理
     "keep_pages": 2,          # 页/本各留 2 格（当前 + 冻结）
     "profile_cap": 40,
-    # 记忆只在私聊：群里不记录、不注入
-    "private_only": True,
+    # 记忆只在私聊：群里不记录、不注入（行为写死，无需配置）
     "max_items": {"hour": 25, "day": 15, "profile": 10},
     # importance 名额：None=不限，数字=该档最多几条；没列出的档位只当补位
     "importance_quota": {
@@ -1091,13 +1090,7 @@ class MemV4(Star):
             logger.error(f"mem4: 注入失败 {e}")
 
     # ---------------- 指令 ----------------
-    async def _authorized(self, event: AstrMessageEvent) -> bool:
-        try:
-            cfg = self.context.get_config(umo=event.unified_msg_origin) or {}
-        except Exception:
-            cfg = {}
-        sid = str(event.get_sender_id())
-        return sid in [str(x) for x in cfg.get("admins_id", [])] or getattr(event, "role", "") == "admin"
+    # 权限统一由 access 插件在处理指令前拦截，这里不再判断
 
     @staticmethod
     def _arg(event: AstrMessageEvent) -> str:
@@ -1154,9 +1147,7 @@ class MemV4(Star):
 
     @filter.command("mem")
     async def mem_cmd(self, event: AstrMessageEvent):
-        if not await self._authorized(event):
-            yield event.plain_result("没权限")
-            return
+        """记忆：查看 / 清空 / 分页 / 手动整理（权限由 access 插件统一拦截）"""
         cfg = self._cfg()
         arg = self._arg(event).lower()
         umo = self._key(event, cfg) or str(event.unified_msg_origin)

@@ -6,73 +6,61 @@
 ## 目录
 
 ```
-plugins/            8 个插件，整个目录拷到 AstrBot 的 data/plugins/
+plugins/                     5 个插件（每个一个目录）
+  astrbot_plugin_access/     指令过滤 / 工具闸门 / 会话身份
+  astrbot_plugin_addressee/  群聊接话状态机
+  astrbot_plugin_chat_style/ 清洗 → 分段 → 延迟（/style）
+  astrbot_plugin_mem/        页/本/棚 记忆（/mem，仅私聊）
+  astrbot_plugin_mode/       人格 + 提示词总装 + 设置（/config）
 data/
-  prompt/           两套提示词（聊天规则 / 记忆整理规则）
-  memory_config.json        记忆参数（页/本/棚 上限、门槛）
-  addressee_config.json     群聊接话参数（把 groups 改成你的群号）
-  config/                   拟人延迟参数（地板 1.5 秒）
-  cmd_perm.example.json     白名单模板（用 scripts/make_perm.py 生成真的）
-scripts/make_perm.py        生成 cmd_perm.json（salt+sha256，不存明文 QQ）
+  access_config.json         明文白名单 {"owner_ids": ["3447899870"]}
+  memory_config.json         记忆参数
+  addressee_config.json      群接话参数
+  prompt/chat_rules.md       公用说话规则
+  prompt/memo_rules.md       记忆整理提示词
+scripts/                     测试与调试脚本
+AGENTS.md                    架构与开发约定（先看这个）
 ```
 
 ## 安装
 
-1. 把 `plugins/` 下 8 个目录拷到 AstrBot 的 `data/plugins/`
-2. 把 `data/prompt/` 拷到 `data/prompt/`
-3. 把 `data/memory_config.json`、`data/addressee_config.json`、`data/config/astrbot_plugin_human_delay_config.json` 拷到对应位置
-4. 生成白名单：
-   ```
-   python scripts/make_perm.py 你的QQ号 [salt]
-   ```
-   把生成的 `data/cmd_perm.json` 放到 AstrBot 的 `data/`
-5. AstrBot 后台/配置里改这几项：
-   - `admins_id` 填你的 QQ（AstrBot 自己的管理员，明文）
-   - `platform_settings.segmented_reply.enable = false`（分发改由 human_delay 插件做）
-   - `provider_tts_settings.enable = false`（本包不含语音）
-   - `agent_runner.config.compression.fallback_max_tokens` 建议 16000
-6. 重启 AstrBot
+1. 把 `plugins/*` 拷到 `AstrBot/data/plugins/`
+2. 把 `data/*.json` 拷到 `AstrBot/data/`，`data/prompt/*.md` 拷到 `AstrBot/data/prompt/`
+3. 改 `data/access_config.json` 里的 `owner_ids`（明文 QQ，多个用逗号分开）
+4. 重启 AstrBot
 
-## 插件一览
+## 插件
 
 | 插件 | 作用 |
 |---|---|
-| `mem` | 页/本/棚三层记忆：每 40 轮归档一个分片（`mem_archive/<QQ>/`），分片满就整理页；页 5 次→本吸、本 5 次→棚吸；私聊与群按「人」合并，每条标来源 |
-| `mode` | 5 套人格 + 提示词分层：公用规则 → 场景 → 人格 → 记忆块 |
-| `config` | `/config delay|think|ctx|prompt|provider` |
-| `addressee` | 群聊三态接话（闲置 10% 掷骰、模型可输出 `<不接>`、夜间静默） |
-| `tidy` | 断句整理：句号→换行、去草稿、拦工具残留 |
-| `human_delay` | 首条随机延迟+打字时间；后续分段自己切、自己发（地板 1.5s） |
-| `priv_gate` | 非白名单清空 agent 工具集 |
-| `cmd_help` | `/cmd` 指令表 + **指令静默闸门**（非白名单发 `/` 指令直接丢弃） |
-
-## 各插件文档
-
-- [mem · 页/本/棚 三层记忆](plugins/astrbot_plugin_mem/README.md)
-- [mode · 人格 + 提示词分层](plugins/astrbot_plugin_mode/README.md)
-- [config · 统一配置入口](plugins/astrbot_plugin_config/README.md)
-- [addressee · 群聊接话状态机](plugins/astrbot_plugin_addressee/README.md)
-- [tidy · 真人口吻整理](plugins/astrbot_plugin_tidy/README.md)
-- [human_delay · 拟人延迟 + 分段发送](plugins/astrbot_plugin_human_delay/README.md)
-- [priv_gate · 权限闸门](plugins/astrbot_plugin_priv_gate/README.md)
-- [cmd_help · 指令表 + 指令闸门](plugins/astrbot_plugin_cmd_help/README.md)
-
+| `access` | `/` 指令只有主人放行，其他人完全静默；非主人没有 agent 工具；给每次请求加会话/身份提示 |
+| `addressee` | 群聊三态接话（闲置掷骰、模型可输出 `<不接>`、夜间静默） |
+| `chat_style` | 文本清洗 + 分段（聊天/长文/结构化三档）+ 拟人延迟 |
+| `mem` | 页/本/棚 三层记忆，每 20 轮整理一次，只在私聊 |
+| `mode` | 5 套人格 + 提示词分层拼装 + `/config` 设置 |
 
 ## 指令
 
 ```
-/mem            记忆状态
-/mem show       看会注入的内容
-/mem clear      清掉这个人的页/本/棚（分片保留）
-/mem page 0-100 每页多少轮（默认 40）
-/mem gen        立刻用当前分片整理一次
-/config ...     延迟/思考/上下文/提示词/模型
-/mode           人格列表，/mode 软萌 切换
-/cmd            指令表
+/config                 设置总览
+/config mode [名字]     人格列表 / 切换
+/config ctx 2-32        上下文预算
+/config think on|off    思考开关
+/config prompt          看这条会话实际提示词
+
+/mem                    记忆状态
+/mem show | clear | gen
+/mem page 0-100         多少轮触发一次整理
+
+/style                  发送节奏
+/style delay 0-10       0=秒发，5=默认
+/style split auto|chat|long
+/style clean on|off
 ```
 
 ## 说明
 
-- **指令权限**：只有 `cmd_perm.json` 里的号能用 `/` 指令；其他人发 `/` 会被 `cmd_help` 的闸门直接 `stop_event()`，**一个字都不回**
-- **记忆**：默认页 20 条 / 本 12 条 / 棚 8 条；距上次整理新增不足 6 条对话不触发；页/本各留 2 格
-- **不需要**任何 `astrbot/` 目录下的补丁；本仓库不含任何密钥、数据库、聊天记录
+- 记忆只在私聊累积；群里不记录、不注入（隐私）
+- 记忆存储：`data/mem_archive/<QQ>/<QQ>.json`（待整理）+ `memory.json`（页/本/棚）
+- 公用说话规则改 `data/prompt/chat_rules.md`，记忆整理提示词改 `data/prompt/memo_rules.md`，改完重启生效
+- 架构、耦合规则、已知坑见 [AGENTS.md](AGENTS.md)

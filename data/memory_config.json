@@ -38,6 +38,5 @@
     "day_items": 15,
     "day_frozen_items": 10,
     "profile_items": 10
-  },
-  "private_only": true
+  }
 }

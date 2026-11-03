@@ -1,6 +1,0 @@
-name: astrbot_plugin_human_delay
-display_name: 拟人延迟 + 分段
-desc: 首条按正态延迟+字数打字时间；后续分段由本插件自己切分、自己发送，地板 1.5 秒。需要把内置 segmented_reply 关掉。
-version: v2.0.0
-author: hermes
-repo: ""
