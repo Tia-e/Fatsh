@@ -1032,27 +1032,34 @@ class MemV4(Star):
         return ordered[: max(0, n)]
 
     def _visible(self, rec: dict, cfg: dict) -> dict:
-        hp = _current_page(rec, "hour")
-        hf = _frozen_page(rec, "hour")
-        dp = _current_page(rec, "day")
-        df = _frozen_page(rec, "day")
+        """当前页/本有内容就用当前的；空了（刚整理完）才拿冻结的填这个空窗。"""
         inj = cfg["inject"]
+        hp, hf = _current_page(rec, "hour"), _frozen_page(rec, "hour")
+        dp, df = _current_page(rec, "day"), _frozen_page(rec, "day")
+        hour = self._top((hp or {}).get("items", []), int(inj.get("hour_items", 25)))
+        hour_from_frozen = False
+        if not hour:
+            hour = self._top((hf or {}).get("items", []), int(inj.get("hour_frozen_items", 10)))
+            hour_from_frozen = bool(hour)
+        day = self._top((dp or {}).get("items", []), int(inj.get("day_items", 15)))
+        day_from_frozen = False
+        if not day:
+            day = self._top((df or {}).get("items", []), int(inj.get("day_frozen_items", 10)))
+            day_from_frozen = bool(day)
         return {
-            "hour": self._top((hp or {}).get("items", []), int(inj.get("hour_items", 25))),
-            "hour_frozen": self._top((hf or {}).get("items", []), int(inj.get("hour_frozen_items", 10))),
-            "day": self._top((dp or {}).get("items", []), int(inj.get("day_items", 15))),
-            "day_frozen": self._top((df or {}).get("items", []), int(inj.get("day_frozen_items", 10))),
+            "hour": hour,
+            "day": day,
             "profile": self._top(rec["profile"]["items"], int(inj.get("profile_items", 10))),
+            "frozen": {"hour": hour_from_frozen, "day": day_from_frozen},
         }
 
     def _memory_block(self, rec: dict, cfg: dict, only_profile: bool = False) -> str:
         v = self._visible(rec, cfg)
+        frozen = v.get("frozen") or {}
         parts = []
         keys = (("profile", "长期"),) if only_profile else (
-            ("hour", "最近一段"),
-            ("hour_frozen", "上一段（已冻结）"),
-            ("day", "这几天"),
-            ("day_frozen", "上几本（已冻结）"),
+            ("hour", "上一段（刚整理完，暂时用这个填着）" if frozen.get("hour") else "最近一段"),
+            ("day", "上一本（刚整理完，暂时用这个填着）" if frozen.get("day") else "这几天"),
             ("profile", "长期"),
         )
         for key, label in keys:
@@ -1199,14 +1206,17 @@ class MemV4(Star):
 
         if arg == "show":
             v = self._visible(self.store.umo(umo), cfg)
+            frozen = v.get("frozen") or {}
             lines = ["🧠 现在会带进聊天的记忆", "────────────────────────"]
-            for k, label in (("hour", "页"), ("hour_frozen", "页·已冻结"),
-                             ("day", "本"), ("day_frozen", "本·已冻结"),
-                             ("profile", "棚")):
-                lines.append(f"【{label}】{len(v.get(k, []))} 条")
-                lines += [f"  · {i.get('content')}" for i in v.get(k, [])] or ["  （空）"]
+            for k, base in (("hour", "页"), ("day", "本"), ("profile", "棚")):
+                label = base
+                if k in frozen and frozen.get(k):
+                    label = base + "（空窗，用刚冻结的填）"
+                items = v.get(k, [])
+                lines.append(f"【{label}】{len(items)} 条")
+                lines += [f"  · {i.get('content')}" for i in items] or ["  （空）"]
                 lines.append("")
-            total = sum(len(v.get(k, [])) for k in v)
+            total = sum(len(v.get(k, [])) for k in ("hour", "day", "profile"))
             lines.append(f"合计 {total} 条（都会注入）")
             yield event.plain_result("\n".join(lines))
             return

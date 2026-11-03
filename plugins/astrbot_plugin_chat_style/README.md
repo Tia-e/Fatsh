@@ -24,7 +24,11 @@
 
 ```
 /style                 状态
-/style delay 0-10      0=秒发，5=默认（1 秒+每字 0.05），10=2 秒+每字 0.1
+/style delay 0-10      档位（0=秒发，5=默认，10=最慢）
+/style perchar 0-0.3   每字秒数
+/style floor 0.2-10    分段之间最低等待
+/style normal 2.5 [1.3]  首条延迟的正态均值/标准差
+/style total 1-60      单条延迟上限
 /style split auto|chat|long   分段模式（auto = 按长度自动判）
 /style clean on|off    清洗开关
 ```

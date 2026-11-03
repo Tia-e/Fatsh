@@ -425,14 +425,19 @@ class ChatStyle(Star):
         return (
             "🎚 发送节奏\\n"
             "────────────────────────\\n"
-            f"{_pad('档位', 6)}{self._delay_level()}（0=秒发，5=默认，10=最慢）\\n"
-            f"{_pad('每字', 6)}{cfg.get('per_char_seconds')} 秒｜分段地板 {self._floor()} 秒\\n"
-            f"{_pad('分段', 6)}{cfg.get('split')}（auto/chat/long）\\n"
-            f"{_pad('清洗', 6)}{'开' if cfg.get('clean', True) else '关'}\\n"
+            f"{_pad('档位', 8)}{self._delay_level()}（0=秒发，5=默认，10=最慢）\\n"
+            f"{_pad('首条', 8)}正态 μ={cfg.get('mean')} σ={cfg.get('sigma')}\\n"
+            f"{_pad('每字', 8)}{cfg.get('per_char_seconds')} 秒\\n"
+            f"{_pad('分段地板', 8)}{self._floor()} 秒｜单条上限 {cfg.get('max_total')} 秒\\n"
+            f"{_pad('分段', 8)}{cfg.get('split')}｜清洗 {'开' if cfg.get('clean', True) else '关'}\\n"
             "────────────────────────\\n"
-            "/style delay 0-10    延迟档位\\n"
-            "/style split auto|chat|long   分段模式\\n"
-            "/style clean on|off  文本清洗"
+            "/style delay 0-10          档位\\n"
+            "/style perchar 0-0.3       每字秒数\\n"
+            "/style floor 0.2-10        分段地板\\n"
+            "/style normal 2.5 [1.3]    首条正态均值/标准差\\n"
+            "/style total 1-60          单条上限\\n"
+            "/style split auto|chat|long\\n"
+            "/style clean on|off"
         )
 
     @filter.command("style")
@@ -465,6 +470,63 @@ class ChatStyle(Star):
                 f"✅ 已设为 {level} 档：首条 0-{level:g} 秒正态 + 每字 {level*0.01:.2f} 秒，"
                 f"分段地板 {self._floor():.1f} 秒"
             )
+            return
+
+        if sub in ("perchar", "typing", "per_char"):
+            try:
+                v = float(rest)
+            except ValueError:
+                yield event.plain_result("用法：/style perchar 0-0.3（每字秒数）")
+                return
+            if v < 0 or v > 0.3:
+                yield event.plain_result("每字延迟只能在 0-0.3 秒之间")
+                return
+            _write_json(_data(CFG_NAME), {**cfg, "per_char_seconds": round(v, 3)})
+            yield event.plain_result(f"✅ 每字 {v:.3f} 秒")
+            return
+
+        if sub == "floor":
+            try:
+                v = float(rest)
+            except ValueError:
+                yield event.plain_result("用法：/style floor 0.5-10（分段之间的最低等待）")
+                return
+            if v < 0.2 or v > 10:
+                yield event.plain_result("地板只能在 0.2-10 秒之间")
+                return
+            _write_json(_data(CFG_NAME), {**cfg, "segment_min_interval": round(v, 2)})
+            yield event.plain_result(f"✅ 分段地板 {v:.2f} 秒")
+            return
+
+        if sub in ("normal", "gauss"):
+            parts = rest.split()
+            if not parts:
+                yield event.plain_result("用法：/style normal 2.5 [1.3]（均值 [标准差]）")
+                return
+            try:
+                mean = float(parts[0])
+                sigma = float(parts[1]) if len(parts) > 1 else float(cfg.get("sigma", 1.3))
+            except ValueError:
+                yield event.plain_result("用法：/style normal 2.5 [1.3]")
+                return
+            if not (0 <= mean <= 10) or not (0 <= sigma <= 5):
+                yield event.plain_result("均值 0-10，标准差 0-5")
+                return
+            _write_json(_data(CFG_NAME), {**cfg, "mean": round(mean, 2), "sigma": round(sigma, 2)})
+            yield event.plain_result(f"✅ 首条延迟 正态(μ={mean:.2f}, σ={sigma:.2f})")
+            return
+
+        if sub == "total":
+            try:
+                v = float(rest)
+            except ValueError:
+                yield event.plain_result("用法：/style total 1-60（单条上限秒数）")
+                return
+            if v < 1 or v > 60:
+                yield event.plain_result("上限只能在 1-60 秒之间")
+                return
+            _write_json(_data(CFG_NAME), {**cfg, "max_total": round(v, 1)})
+            yield event.plain_result(f"✅ 单条延迟上限 {v:.1f} 秒")
             return
 
         if sub == "split":
