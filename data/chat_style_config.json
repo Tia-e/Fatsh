@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "distribution": "normal",
+  "mean": 2.5,
+  "sigma": 1.3,
+  "min_delay": 0.0,
+  "max_delay": 5.0,
+  "base_delay": 1.0,
+  "per_char_seconds": 0.05,
+  "segment_min_interval": 1.5,
+  "segment_max": 6,
+  "max_total": 15.0,
+  "split": "auto",
+  "clean": true,
+  "leak_action": "deflect"
+}
