@@ -17,7 +17,6 @@ import time
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
-
 try:
     from astrbot.core.message.components import At, Plain, Reply
 except Exception:  # pragma: no cover
@@ -54,6 +53,12 @@ def _data(*parts: str) -> str:
     return os.path.join(base, *parts)
 
 
+@register(
+    "astrbot_plugin_addressee",
+    "hermes",
+    "群聊接话状态机：闲置掷骰 / 接话窗口 / 静默窗口 / 结构化信号必回",
+    "2.0.0",
+)
 class AddresseeState(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)

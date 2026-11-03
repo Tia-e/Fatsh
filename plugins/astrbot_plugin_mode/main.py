@@ -161,10 +161,6 @@ class ModeSwitch(Star):
         except Exception:
             return {}
 
-    # 权限统一由 access 插件拦截，这里不再判断（保留空实现以免旧调用报错）
-    async def _authorized(self, event: AstrMessageEvent) -> bool:
-        return True
-
     # ---------- 第 2 层：场景信息 ----------
     def _scene_block(self, event: AstrMessageEvent) -> str:
         uid = str(event.get_sender_id())
