@@ -1,0 +1,6 @@
+name: astrbot_plugin_help
+display_name: 指令索引
+desc: 主人单独发一个 "/" 时，读取各插件写在 data/cmd_list/<name>.txt 的命令清单并汇总回复。没有自己的命令。
+version: v1.0.0
+author: hermes
+repo: ""

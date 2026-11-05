@@ -13,6 +13,7 @@ AstrBot 4.29.x + SnowLuma。只桥接小号，只回复主人私聊和指定群�
 | `astrbot_plugin_chat_style` | 清洗 → 分段 → 延迟（一条发送链） | `on_decorating_result`（唯一） | `/style` | `chat_style_config.json` |
 | `astrbot_plugin_mem` | 页/本/棚 记忆（只在私聊） | `on_llm_response`、`on_llm_request` | `/mem` | `memory_config.json` |
 | `astrbot_plugin_mode` | 人格 + 提示词总装 + 设置 | `on_llm_request` | `/config` | `mode_state.json` |
+| `astrbot_plugin_help` | 单独 `/` 列命令（扫 `cmd_list/*.txt`） | `event_message_type(ALL, priority=9998)` | 无（裸 `/`） | — |
 
 ## 三条硬规矩
 

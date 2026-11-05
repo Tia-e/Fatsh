@@ -131,6 +131,27 @@ class ChatStyle(Star):
         super().__init__(context)
         self.config = config or {}
         self._migrate_cfg()
+        self._write_cmd_list()
+
+    def _write_cmd_list(self) -> None:
+        """给 help 插件写命令清单（data/cmd_list/style.txt）"""
+        try:
+            d = _data("cmd_list")
+            os.makedirs(d, exist_ok=True)
+            lines = [
+                "/style                发送节奏状态",
+                "/style delay 0-10     档位（0=秒发，5=默认）",
+                "/style perchar 0.05   每字秒数（0-0.3）",
+                "/style floor 1.5      分段地板（0.2-10）",
+                "/style normal 2.5 1.3 首条正态 均值/标准差",
+                "/style total 15       单条上限（1-60）",
+                "/style split auto|chat|long",
+                "/style clean on|off   文本清洗",
+            ]
+            with open(os.path.join(d, "style.txt"), "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+        except Exception as e:
+            logger.error(f"chat_style: 写命令清单失败 {e}")
 
     def _migrate_cfg(self) -> None:
         """老配置（human_delay 目录下）→ chat_style_config.json"""

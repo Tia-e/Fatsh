@@ -601,6 +601,7 @@ class MemV4(Star):
         self._busy: set[str] = set()
         self._locks: dict[str, asyncio.Lock] = {}
         self._idle_task = None
+        self._write_cmd_list()
         try:
             self._idle_task = asyncio.create_task(self._idle_loop())
             asyncio.create_task(self._startup_catchup())
@@ -617,6 +618,23 @@ class MemV4(Star):
                 await self._after_turn(umo)
         except Exception as e:
             logger.error(f"mem4: 启动补整理失败 {e}")
+
+    def _write_cmd_list(self) -> None:
+        """给 help 插件写命令清单（data/cmd_list/mem.txt）"""
+        try:
+            d = os.path.join(_data_dir(), "cmd_list")
+            os.makedirs(d, exist_ok=True)
+            lines = [
+                "/mem                记忆状态（页/本/棚、待整理轮数）",
+                "/mem show           看会注入的记忆",
+                "/mem clear          清空这个人的页/本/棚",
+                "/mem page 0-100     多少轮触发一次整理",
+                "/mem gen            立刻整理待整理的对话",
+            ]
+            with open(os.path.join(d, "mem.txt"), "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+        except Exception as e:
+            logger.error(f"mem4: 写命令清单失败 {e}")
 
     # ---------------- 配置 ----------------
     def _load_memo(self) -> str:

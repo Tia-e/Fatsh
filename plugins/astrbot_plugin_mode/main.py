@@ -142,6 +142,24 @@ class ModeSwitch(Star):
         super().__init__(context)
         self.config = config or {}
         self._rules = _load_chat_rules()
+        self._write_cmd_list()
+
+    def _write_cmd_list(self) -> None:
+        """给 help 插件写命令清单（data/cmd_list/config.txt）"""
+        try:
+            d = os.path.join(get_astrbot_data_path(), "cmd_list")
+            os.makedirs(d, exist_ok=True)
+            lines = [
+                "/config               设置总览",
+                "/config mode [名字]   人格列表 / 切换（默认·软萌·贴吧老哥·傲娇·毒舌）",
+                "/config ctx 2-32      上下文预算（k tokens）",
+                "/config think on|off  思考开关",
+                "/config prompt       看这条会话实际提示词",
+            ]
+            with open(os.path.join(d, "config.txt"), "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+        except Exception as e:
+            logger.error(f"mode: 写命令清单失败 {e}")
 
     # ---------- 状态 ----------
     def _get_mode(self, event: AstrMessageEvent) -> str:
