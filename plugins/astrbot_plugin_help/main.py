@@ -48,6 +48,32 @@ def _raw_text(event: AstrMessageEvent) -> str:
     return (event.message_str or "").strip()
 
 
+def _is_bare_slash(event: AstrMessageEvent) -> bool:
+    """AstrBot 会把开头的 / 剥掉，裸 / 往往到插件时 message_str 已经空了，
+    所以还要看原始消息体里那一段 text。"""
+    for t in (
+        (getattr(event, "message_str", "") or "").strip(),
+        _raw_text(event),
+    ):
+        if t in ("/", "／"):
+            return True
+    try:
+        raw = getattr(event.message_obj, "raw_message", None)
+        if isinstance(raw, dict):
+            if str(raw.get("raw_message") or "").strip() in ("/", "／"):
+                return True
+            for seg in raw.get("message") or []:
+                if (
+                    isinstance(seg, dict)
+                    and seg.get("type") == "text"
+                    and str((seg.get("data") or {}).get("text", "")).strip() in ("/", "／")
+                ):
+                    return True
+    except Exception:
+        pass
+    return False
+
+
 def collect_commands() -> list[tuple[str, list[str]]]:
     """data/cmd_list/*.txt → [(插件名, [命令行...])]，按文件名排序。"""
     d = _data(LIST_DIR)
@@ -79,15 +105,7 @@ class HelpIndex(Star):
     def __init__(self, context: Context):
         super().__init__(context)
 
-    @filter.event_message_type(EventMessageType.ALL, priority=9998)
-    async def bare_slash(self, event: AstrMessageEvent):
-        text = _raw_text(event)
-        if text not in ("/", "／", "/ ", "／ "):
-            return
-        sid = str(event.get_sender_id())
-        if sid not in _owners():
-            return
-
+    def _render(self) -> str:
         cmds = collect_commands()
         if not cmds:
             body = "还没有任何插件写命令清单（data/cmd_list/ 是空的）"
@@ -96,8 +114,26 @@ class HelpIndex(Star):
             for plugin, lines in cmds:
                 blocks.append(f"【{plugin}】\n" + "\n".join(lines))
             body = "\n".join(blocks)
+        return f"📋 可用指令\n────────────────────────\n{body}"
+
+    @filter.event_message_type(EventMessageType.ALL, priority=9998)
+    async def bare_slash(self, event: AstrMessageEvent):
+        if not _is_bare_slash(event):
+            return
+        sid = str(event.get_sender_id())
+        if sid not in _owners():
+            return
+        logger.info(f"help: 裸 / 命中（sender={sid}）")
         try:
             event.stop_event()
         except Exception:
             pass
-        yield event.plain_result(f"📋 可用指令\n────────────────────────\n{body}")
+        yield event.plain_result(self._render())
+
+    @filter.command("help")
+    async def help_cmd(self, event: AstrMessageEvent):
+        """兜底：/help 也能拿到同一张表"""
+        sid = str(event.get_sender_id())
+        if sid not in _owners():
+            return
+        yield event.plain_result(self._render())
